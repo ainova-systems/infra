@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Unused container engine data cleanup ({{ container_engine__daemon.account }})
+{% if container_engine__daemon.account == 'root' %}
+After=docker.service
+{% endif %}
+
+[Service]
+Type=oneshot
+User={{ container_engine__daemon.account }}
+Environment=DOCKER_HOST={{ container_engine__daemon.socket }}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart={{ container_engine__cleanup_script }} --apply
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle
+UMask=0077

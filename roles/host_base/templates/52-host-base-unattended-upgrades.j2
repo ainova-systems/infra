@@ -1,0 +1,10 @@
+// {{ ansible_managed }}
+// Security origins only; feature updates are a reviewed pin change.
+Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+        "${distro_id}ESMApps:${distro_codename}-apps-security";
+        "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Automatic-Reboot "{{ host_base_auto_reboot | bool | lower }}";
+Unattended-Upgrade::Automatic-Reboot-Time "{{ host_base_auto_reboot_time }}";

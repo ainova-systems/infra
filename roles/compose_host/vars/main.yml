@@ -1,0 +1,5 @@
+---
+# Derived values, not inputs: set compose_host_* variables from defaults/main.yml instead.
+compose_host__key_pattern: >-
+  ^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)
+  [A-Za-z0-9+/=]+( [^ ][^']*)?$

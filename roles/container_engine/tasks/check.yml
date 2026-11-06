@@ -1,0 +1,174 @@
+---
+# Read-only. Every probe runs in --check too and never reports a change; one assert at the end
+# lists every failed control and fails the host.
+- name: Validate inputs and platform
+  ansible.builtin.include_tasks: assert.yml
+
+- name: Read installed packages
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Read held packages
+  ansible.builtin.command:
+    argv: [apt-mark, showhold]
+  register: container_engine__holds
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read system daemon state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, docker.service]
+  register: container_engine__rootful_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read system daemon configuration
+  ansible.builtin.command:
+    argv: [cat, /etc/docker/daemon.json]
+  register: container_engine__rootful_config
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: container_engine__rootful
+
+- name: Read rootless accounts
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ item }}"]
+  loop: "{{ container_engine_rootless_accounts }}"
+  register: container_engine__passwd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Probe rootless daemons
+  vars:
+    container_engine__present: "{{ container_engine__passwd.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
+    container_engine__uid_of: >-
+      {{ dict(container_engine__passwd.results | selectattr('rc', 'equalto', 0) | map(attribute='item')
+         | zip(container_engine__passwd.results | selectattr('rc', 'equalto', 0) | map(attribute='stdout')
+               | map('split', ':') | map(attribute=2))) }}
+  block:
+    - name: Read rootless sockets
+      ansible.builtin.stat:
+        path: "/run/user/{{ container_engine__uid_of[item] }}/docker.sock"
+      loop: "{{ container_engine__present }}"
+      register: container_engine__sockets
+
+    - name: Read rootless daemon unit state
+      ansible.builtin.command:
+        argv: ["{{ container_engine__as_account }}", "{{ item }}", systemctl, --user, is-enabled, docker.service]
+      loop: "{{ container_engine__present }}"
+      register: container_engine__user_enabled
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read rootless daemon information
+      ansible.builtin.command:
+        argv: ["{{ container_engine__as_account }}", "{{ item }}", docker, info, --format, json]
+      loop: "{{ container_engine__present }}"
+      register: container_engine__user_info
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read rootless Compose
+      ansible.builtin.command:
+        argv: ["{{ container_engine__as_account }}", "{{ item }}", docker, compose, version]
+      loop: "{{ container_engine__present }}"
+      register: container_engine__user_compose
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Probe system socket access from rootless accounts
+      ansible.builtin.command:
+        argv: [runuser, -u, "{{ item }}", --, test, -w, "{{ container_engine__rootful_socket }}"]
+      loop: "{{ container_engine__present }}"
+      register: container_engine__rootful_access
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Probe cross-account socket access
+      ansible.builtin.command:
+        argv: [runuser, -u, "{{ item[0] }}", --, test, -w, "/run/user/{{ container_engine__uid_of[item[1]] }}/docker.sock"]
+      loop: "{{ container_engine__present | product(container_engine__present) | list }}"
+      register: container_engine__cross_access
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: item[0] != item[1]
+
+    - name: Read sudo rights of rootless accounts
+      ansible.builtin.command:
+        argv: [sudo, -n, -l, -U, "{{ item }}"]
+      loop: "{{ container_engine__present }}"
+      register: container_engine__sudo
+      environment:
+        LC_ALL: C
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+- name: Read cleanup timers
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "container-engine-cleanup-{{ item }}.timer"]
+  loop: "{{ (['root'] if container_engine__rootful else []) + container_engine_rootless_accounts }}"
+  register: container_engine__timers
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert container_engine controls
+  ansible.builtin.assert:
+    that:
+      - container_engine__failures | length == 0
+    fail_msg: "container_engine FAILED: {{ container_engine__failures | join('; ') }}"
+    success_msg: >-
+      container_engine OK: {{ container_engine_mode }} {{ container_engine_version }},
+      rootless accounts {{ container_engine_rootless_accounts | join(', ') or 'none' }}
+  vars:
+    container_engine__pkg_failures: >-
+      {%- for name, prefix in container_engine__packages.items() -%}
+      {%- set installed = ansible_facts.packages[name][0].version if name in ansible_facts.packages else '' -%}
+      {{ (name ~ ' not installed;') if installed == '' else '' }}
+      {{- (name ~ ' ' ~ installed ~ ' is not the pin;') if installed != '' and not installed.startswith(prefix) else '' }}
+      {{- (name ~ ' not held;') if name not in container_engine__holds.stdout_lines else '' }}
+      {%- endfor -%}
+    container_engine__account_failures: >-
+      {%- for r in container_engine__passwd.results if r.rc != 0 -%}rootless account {{ r.item }} missing;{%- endfor -%}
+      {%- for r in container_engine__sockets.results | default([]) if not r.stat.exists -%}no rootless socket for {{ r.item }};{%- endfor -%}
+      {%- for r in container_engine__user_enabled.results | default([]) if r.stdout | trim != 'enabled' -%}
+      rootless daemon of {{ r.item }} not enabled;
+      {%- endfor -%}
+      {%- for r in container_engine__user_info.results | default([]) -%}
+      {%- if r.rc != 0 -%}rootless daemon of {{ r.item }} not answering;
+      {%- elif 'rootless' not in ((r.stdout | from_json).SecurityOptions | default([]) | join(' ')) -%}daemon of {{ r.item }} is not rootless;
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for r in container_engine__user_compose.results | default([]) if r.rc != 0 -%}Compose unavailable for {{ r.item }};{%- endfor -%}
+      {%- for r in container_engine__rootful_access.results | default([]) if r.rc == 0 -%}{{ r.item }} can write the system daemon socket;{%- endfor -%}
+      {%- for r in container_engine__cross_access.results | default([]) if r.rc is defined and r.rc == 0 -%}
+      {{ r.item[0] }} can write the daemon socket of {{ r.item[1] }};
+      {%- endfor -%}
+      {%- for r in container_engine__sudo.results | default([]) if 'is not allowed to run sudo' not in r.stdout -%}
+      rootless account {{ r.item }} holds sudo rights;
+      {%- endfor -%}
+    container_engine__timer_failures: >-
+      {%- if container_engine__cleanup.enabled | bool -%}
+      {%- for r in container_engine__timers.results if r.stdout | trim != 'active' -%}cleanup timer for {{ r.item }} not active;{%- endfor -%}
+      {%- endif -%}
+    container_engine__rootful_state_text: "{{ container_engine__rootful_state.stdout | trim }}"
+    container_engine__rootful_config_failures: >-
+      {{ ('system daemon active in rootless mode;' if container_engine__rootful_state_text == 'active' else '')
+         if not container_engine__rootful
+         else ('system daemon not active;' if container_engine__rootful_state_text != 'active'
+         else ('system daemon configuration missing;' if container_engine__rootful_config.rc != 0
+         else ('' if (container_engine__rootful_config.stdout | from_json).get('log-opts', {}).get('max-size') == container_engine_log_max_size
+         else 'system daemon log rotation differs;'))) }}
+    container_engine__failures: >-
+      {{ (container_engine__pkg_failures ~ container_engine__account_failures ~ container_engine__timer_failures
+          ~ container_engine__rootful_config_failures).split(';') | map('trim') | select | list }}

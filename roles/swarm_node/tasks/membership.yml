@@ -1,0 +1,21 @@
+---
+# Read-only: the node is in a swarm with the declared role, address and (when set) cluster. Shared by apply and check.
+
+- name: Assert swarm membership
+  ansible.builtin.assert:
+    that:
+      - swarm_node__state == 'active'
+      - (swarm_node__info.Swarm.ControlAvailable | default(false) | bool) == (swarm_node__is_manager | bool)
+      - >-
+        swarm_node_advertise_addr is not match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+        or swarm_node__info.Swarm.NodeAddr | default('') == swarm_node_advertise_addr
+      - >-
+        swarm_node_cluster_id | length == 0
+        or (swarm_node__info.Swarm.Cluster.ID | default('')) == swarm_node_cluster_id
+        or not swarm_node__is_manager
+    fail_msg: >-
+      Swarm state {{ swarm_node__state }}, manager {{ swarm_node__info.Swarm.ControlAvailable | default(false) }},
+      address {{ swarm_node__info.Swarm.NodeAddr | default('-') }}, cluster {{ swarm_node__info.Swarm.Cluster.ID | default('-') }}
+      differ from the declaration (role {{ swarm_node_role }}). The role never promotes, demotes or moves a node:
+      run docker node promote/demote on a manager, or leave and rejoin by hand.
+    quiet: true

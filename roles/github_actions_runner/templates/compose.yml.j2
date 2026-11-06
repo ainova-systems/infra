@@ -1,0 +1,35 @@
+# Managed by the github_actions_runner role; changes here are overwritten.
+# Holds no credential: the registration lives in the data volume, written once by config.sh.
+name: {{ github_actions_runner__name }}
+services:
+  runner:
+    image: "{{ github_actions_runner_image }}"
+    container_name: {{ github_actions_runner__name }}
+    restart: unless-stopped
+    init: true
+    cpus: {{ github_actions_runner_instance.cpus }}
+    mem_limit: {{ github_actions_runner_instance.memory }}m
+    memswap_limit: {{ github_actions_runner_instance.memory }}m
+    group_add:
+      - "{{ github_actions_runner__socket.stat.gid }}"
+    environment:
+      {{ github_actions_runner_identity_env.url }}: "{{ github_actions_runner_scope_url }}"
+      {{ github_actions_runner_identity_env.name }}: "{{ github_actions_runner__name }}"
+      {{ github_actions_runner_identity_env.labels }}: "{{ github_actions_runner__labels }}"
+{% for key, value in github_actions_runner_extra_env | dictsort %}
+      {{ key }}: {{ value | string | replace('$', '$$') | to_json }}
+{% endfor %}
+    volumes:
+      - "{{ github_actions_runner_docker_socket }}:/var/run/docker.sock"
+      - "runner-data:{{ github_actions_runner_data_path }}"
+    labels:
+      infra.managed-by: github_actions_runner
+      infra.runner: {{ github_actions_runner__name }}
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ github_actions_runner_log_max_size }}"
+        max-file: "{{ github_actions_runner_log_max_file }}"
+volumes:
+  runner-data:
+    name: {{ github_actions_runner__volume }}

@@ -1,0 +1,254 @@
+---
+# Read-only check. Uses only assert, stat and read-only commands; fails on the first failed control.
+# Credential presence is reported separately and never fails the check: storing tokens is the owner's step.
+
+- name: Validate host and inputs
+  ansible.builtin.include_tasks: assert.yml
+
+# --- Managed system files -------------------------------------------------------------------------
+
+- name: Stat managed system files
+  ansible.builtin.stat:
+    path: "{{ item.dest }}"
+    follow: false
+  loop: &dev_workstation_managed_files
+    - {src: toolchain.env.j2, dest: "{{ dev_workstation_config_dir }}/toolchain.env", mode: "0644"}
+    - {src: toolchain-profile.sh.j2, dest: /etc/profile.d/dev-workstation-toolchain.sh, mode: "0644"}
+    - {src: intelligence-cli-update.service.j2, dest: /etc/systemd/system/intelligence-cli-update.service, mode: "0644"}
+    - {src: intelligence-cli-update.timer.j2, dest: /etc/systemd/system/intelligence-cli-update.timer, mode: "0644"}
+    - {src: git-credential-scope.sh.j2, dest: "{{ dev_workstation_credential_helper }}", mode: "0755"}
+    - {src: credential-preflight.sh.j2, dest: "{{ dev_workstation_libexec_dir }}/credential-preflight", mode: "0755"}
+  loop_control:
+    label: "{{ item.dest }}"
+  register: dev_workstation_file_stats
+
+- name: Assert managed system files are root-owned regular files with the expected mode
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.pw_name == 'root'
+      - item.stat.mode == item.item.mode
+    fail_msg: "{{ item.item.dest }} is missing, not a root-owned regular file, or not mode {{ item.item.mode }}."
+    quiet: true
+  loop: "{{ dev_workstation_file_stats.results }}"
+  loop_control:
+    label: "{{ item.item.dest }}"
+
+- name: Read managed system files
+  ansible.builtin.command:
+    argv: [cat, "{{ item.dest }}"]
+  loop: *dev_workstation_managed_files
+  loop_control:
+    label: "{{ item.dest }}"
+  register: dev_workstation_file_contents
+  changed_when: false
+  check_mode: false
+
+- name: Assert managed system files match the role
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim == lookup('ansible.builtin.template', item.item.src) | trim
+    fail_msg: "{{ item.item.dest }} differs from the role; re-apply instead of editing the host."
+    quiet: true
+  loop: "{{ dev_workstation_file_contents.results }}"
+  loop_control:
+    label: "{{ item.item.dest }}"
+
+# --- Signed sources and held packages -------------------------------------------------------------
+
+- name: Read installed key fingerprints
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      gpg --batch --no-default-keyring --show-keys --with-colons "$KEY"
+      | awk -F: '$1=="pub"{want=1;next} $1=="fpr" && want {print $10;want=0}' | sort
+    executable: /bin/bash
+  environment:
+    KEY: "{{ item.key_file }}"
+  loop: &dev_workstation_sources
+    - name: nodesource
+      key_file: /etc/apt/keyrings/nodesource.asc
+      fingerprints: "{{ dev_workstation_node_key_fingerprints }}"
+      source: "deb [arch=amd64 signed-by=/etc/apt/keyrings/nodesource.asc] {{ dev_workstation_node_repo_url }} nodistro main"
+    - name: github-cli
+      key_file: /etc/apt/keyrings/githubcli-archive-keyring.gpg
+      fingerprints: "{{ dev_workstation_gh_key_fingerprints }}"
+      source: "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] {{ dev_workstation_gh_repo_url }} stable main"
+  loop_control:
+    label: "{{ item.name }}"
+  register: dev_workstation_key_fprs
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert installed keys are the pinned keys
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout_lines == item.item.fingerprints | sort
+    fail_msg: "{{ item.item.name }} signing key is missing or differs from the pin."
+    quiet: true
+  loop: "{{ dev_workstation_key_fprs.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Read apt source files
+  ansible.builtin.command:
+    argv: [cat, "/etc/apt/sources.list.d/{{ item.name }}.list"]
+  loop: *dev_workstation_sources
+  loop_control:
+    label: "{{ item.name }}"
+  register: dev_workstation_source_files
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert apt sources are signed and unchanged
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == item.item.source
+    fail_msg: "/etc/apt/sources.list.d/{{ item.item.name }}.list is missing or differs from the role."
+    quiet: true
+  loop: "{{ dev_workstation_source_files.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Read held packages and installed versions
+  ansible.builtin.command:
+    argv: [dpkg-query, -W, "-f=${Package} ${Version} ${Status}\n", nodejs, gh]
+  register: dev_workstation_dpkg
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert Node.js and GitHub CLI are the pinned, held versions
+  ansible.builtin.assert:
+    that:
+      - ('nodejs ' ~ dev_workstation_node_package_version ~ ' hold ok installed') in dev_workstation_dpkg.stdout_lines
+      - ('gh ' ~ dev_workstation_gh_version ~ ' hold ok installed') in dev_workstation_dpkg.stdout_lines
+    fail_msg: Node.js or GitHub CLI is not installed at the pinned version with an apt hold.
+    quiet: true
+
+# --- Toolchain ------------------------------------------------------------------------------------
+
+- name: Read toolchain versions
+  ansible.builtin.command:
+    argv: "{{ item.argv }}"
+  loop:
+    - {name: node, argv: [/usr/bin/node, --version]}
+    - {name: npm, argv: [/usr/bin/npm, --version]}
+    - {name: corepack, argv: [/usr/local/bin/corepack, --version]}
+    - {name: gh, argv: [/usr/bin/gh, --version]}
+    - {name: sdks, argv: ["{{ dev_workstation_dotnet_root }}/dotnet", --list-sdks]}
+    - {name: runtimes, argv: ["{{ dev_workstation_dotnet_root }}/dotnet", --list-runtimes]}
+    - {name: intelligence, argv: [/usr/bin/npm, ls, --global, --depth=0, --json, "{{ dev_workstation_intelligence_package }}"]}
+    - {name: make, argv: [make, --version]}
+  loop_control:
+    label: "{{ item.name }}"
+  register: dev_workstation_versions
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert the pinned toolchain
+  vars:
+    dev_workstation_v: "{{ dict(dev_workstation_versions.results | map(attribute='item.name') | zip(dev_workstation_versions.results)) }}"
+    dev_workstation_sdk_versions: "{{ dev_workstation_v.sdks.stdout_lines | map('split', ' ') | map('first') | list }}"
+    dev_workstation_intelligence_current: >-
+      {{ ((dev_workstation_v.intelligence.stdout | default('{}', true) | from_json).dependencies | default({}))
+         [dev_workstation_intelligence_package].version | default('0.0.0') }}
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_v.node.rc == 0
+      - dev_workstation_v.node.stdout == 'v' ~ dev_workstation_node_package_version.split('-')[0]
+      - dev_workstation_v.npm.rc == 0
+      - dev_workstation_v.corepack.stdout == dev_workstation_corepack_version
+      - ('gh version ' ~ dev_workstation_gh_version ~ ' ') in dev_workstation_v.gh.stdout
+      - dev_workstation_v.make.rc == 0
+      - dev_workstation_v.sdks.rc == 0
+      - dev_workstation_sdk_versions | intersect(dev_workstation_dotnet_sdks | map(attribute='version')) | length == dev_workstation_dotnet_sdks | length
+      - dev_workstation_intelligence_current is version(dev_workstation_intelligence_version, '>=')
+    fail_msg: >-
+      Toolchain differs from the pins (node {{ dev_workstation_v.node.stdout | default('?') }},
+      corepack {{ dev_workstation_v.corepack.stdout | default('?') }}, sdks {{ dev_workstation_sdk_versions | join(' ') }},
+      intelligence {{ dev_workstation_intelligence_current }}).
+    quiet: true
+
+# A shared framework without the same Microsoft.NETCore.App version makes roll-forward pick a newer patch
+# and abort a test host before any test runs.
+- name: Assert every shared .NET framework has its base runtime
+  vars:
+    dev_workstation_runtime_lines: "{{ (dev_workstation_versions.results | selectattr('item.name', 'equalto', 'runtimes') | first).stdout_lines }}"
+    dev_workstation_base_re: '^Microsoft[.]NETCore[.]App '
+    dev_workstation_base_versions: >-
+      {{ dev_workstation_runtime_lines | select('match', dev_workstation_base_re) | map('split', ' ') | map(attribute=1) | list }}
+    dev_workstation_other_versions: >-
+      {{ dev_workstation_runtime_lines | reject('match', dev_workstation_base_re) | map('split', ' ') | map(attribute=1) | unique | list }}
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_other_versions | difference(dev_workstation_base_versions) | length == 0
+    fail_msg: "Shared frameworks without a matching base runtime: {{ dev_workstation_other_versions | difference(dev_workstation_base_versions) | join(' ') }}"
+    quiet: true
+
+- name: Stat toolchain links
+  ansible.builtin.stat:
+    path: "/usr/local/bin/{{ item.name }}"
+    follow: false
+  loop:
+    - {name: dotnet, target: "{{ dev_workstation_dotnet_root }}/dotnet"}
+    - {name: corepack, target: "{{ dev_workstation_tools_dir }}/corepack-{{ dev_workstation_corepack_version }}/bin/corepack"}
+    - {name: pnpm, target: "{{ dev_workstation_tools_dir }}/corepack-{{ dev_workstation_corepack_version }}/lib/node_modules/corepack/dist/pnpm.js"}
+    - {name: pnpx, target: "{{ dev_workstation_tools_dir }}/corepack-{{ dev_workstation_corepack_version }}/lib/node_modules/corepack/dist/pnpx.js"}
+  loop_control:
+    label: "{{ item.name }}"
+  register: dev_workstation_links
+
+- name: Assert toolchain links point at the pinned installs
+  ansible.builtin.assert:
+    that:
+      - item.stat.islnk | default(false)
+      - item.stat.lnk_target == item.item.target
+    fail_msg: "/usr/local/bin/{{ item.item.name }} does not link to {{ item.item.target }}."
+    quiet: true
+  loop: "{{ dev_workstation_links.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+# --- Intelligence update timer --------------------------------------------------------------------
+
+- name: Read the Intelligence CLI update timer state
+  ansible.builtin.command:
+    argv: [systemctl, show, intelligence-cli-update.timer, --property=UnitFileState, --property=ActiveState]
+  register: dev_workstation_timer
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert the Intelligence CLI update timer is enabled and active
+  ansible.builtin.assert:
+    that:
+      - "'UnitFileState=enabled' in dev_workstation_timer.stdout_lines"
+      - "'ActiveState=active' in dev_workstation_timer.stdout_lines"
+    fail_msg: The Intelligence CLI update timer is not enabled and active.
+    quiet: true
+  when: dev_workstation_intelligence_update_enabled | bool
+
+- name: Assert the Intelligence CLI update timer is disabled
+  ansible.builtin.assert:
+    that:
+      - "'UnitFileState=enabled' not in dev_workstation_timer.stdout_lines"
+    fail_msg: The Intelligence CLI update timer is enabled although the role disables it.
+    quiet: true
+  when: not dev_workstation_intelligence_update_enabled | bool
+
+# --- Per account ----------------------------------------------------------------------------------
+
+- name: Check each coding account
+  ansible.builtin.include_tasks: check_account.yml
+  loop: "{{ dev_workstation_accounts }}"
+  loop_control:
+    loop_var: dev_workstation_account
+    label: "{{ dev_workstation_account.name }}"

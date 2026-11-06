@@ -1,0 +1,122 @@
+---
+# Apply: deploy account, SSH keys, stack directories and private env-file locations. Deploys no stack.
+
+- name: Validate the host and inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Create the deploy account
+  ansible.builtin.user:
+    name: "{{ compose_host_deploy_user }}"
+    shell: "{{ compose_host_deploy_shell }}"
+    home: "{{ compose_host_deploy_home }}"
+    create_home: true
+    password_lock: true
+    # Exact supplementary groups: docker when granted, none otherwise.
+    groups: "{{ 'docker' if compose_host_deploy_docker_access else '' }}"
+    append: false
+
+# In check mode a new account does not exist yet, so nothing can be owned by it; those steps are reported skipped.
+- name: Note whether the account exists for owner-dependent steps
+  ansible.builtin.set_fact:
+    compose_host__account_ready: "{{ compose_host__passwd.rc == 0 or not ansible_check_mode }}"
+
+- name: Create the deploy account's SSH directory
+  ansible.builtin.file:
+    path: "{{ compose_host_deploy_home }}/.ssh"
+    state: directory
+    owner: "{{ compose_host_deploy_user }}"
+    group: "{{ compose_host_deploy_user }}"
+    mode: "0700"
+  when:
+    - compose_host__account_ready
+    - compose_host_deploy_keys | length > 0
+
+- name: Write the deploy account's authorized keys
+  ansible.builtin.copy:
+    dest: "{{ compose_host_deploy_home }}/.ssh/authorized_keys"
+    content: "{{ compose_host_deploy_keys | join('\n') }}\n"
+    owner: "{{ compose_host_deploy_user }}"
+    group: "{{ compose_host_deploy_user }}"
+    mode: "0600"
+  when:
+    - compose_host__account_ready
+    - compose_host_deploy_keys | length > 0
+
+- name: Remove SSH login for the deploy account when no key is declared
+  ansible.builtin.file:
+    path: "{{ compose_host_deploy_home }}/.ssh/authorized_keys"
+    state: absent
+  when: compose_host_deploy_keys | length == 0
+
+- name: Create the stack root
+  ansible.builtin.file:
+    path: "{{ compose_host_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the stack directories
+  ansible.builtin.file:
+    path: "{{ compose_host_root }}/{{ compose_host_stack }}"
+    state: directory
+    owner: "{{ compose_host_deploy_user }}"
+    group: "{{ compose_host_deploy_user }}"
+    mode: "0750"
+  loop: "{{ compose_host_stack_dirs }}"
+  loop_control:
+    loop_var: compose_host_stack
+  when: compose_host__account_ready
+
+- name: Create the private env-file directories
+  ansible.builtin.file:
+    path: "{{ compose_host_root }}/{{ compose_host_stack }}/{{ compose_host_private_dir }}"
+    state: directory
+    owner: "{{ compose_host_deploy_user }}"
+    group: "{{ compose_host_deploy_user }}"
+    mode: "0700"
+  loop: "{{ compose_host_stack_dirs }}"
+  loop_control:
+    loop_var: compose_host_stack
+  when: compose_host__account_ready
+
+- name: Read existing env files
+  ansible.builtin.stat:
+    path: "{{ compose_host_root }}/{{ compose_host_stack }}/{{ compose_host_private_dir }}/{{ compose_host_env_file }}"
+    get_checksum: false
+    follow: false
+  register: compose_host__env_files
+  loop: "{{ compose_host_stack_dirs }}"
+  loop_control:
+    loop_var: compose_host_stack
+
+- name: Refuse an env file that is not a regular file
+  ansible.builtin.assert:
+    that:
+      - not compose_host__env_file.stat.exists or compose_host__env_file.stat.isreg
+    fail_msg: "{{ compose_host__env_file.stat.path | default('env file') }} is a link or not a regular file; replace it with a regular file."
+    quiet: true
+  loop: "{{ compose_host__env_files.results }}"
+  loop_control:
+    loop_var: compose_host__env_file
+    label: "{{ compose_host__env_file.compose_host_stack }}"
+
+# Mode and owner only: the content belongs to the pipeline and is never read or written here.
+- name: Keep existing env files private
+  ansible.builtin.file:
+    path: "{{ compose_host__env_file.stat.path }}"
+    state: file
+    owner: "{{ compose_host_deploy_user }}"
+    group: "{{ compose_host_deploy_user }}"
+    mode: "0600"
+  loop: "{{ compose_host__env_files.results }}"
+  loop_control:
+    loop_var: compose_host__env_file
+    label: "{{ compose_host__env_file.compose_host_stack }}"
+  when:
+    - compose_host__account_ready
+    - compose_host__env_file.stat.exists
+
+- name: Assert the deploy account stays unprivileged
+  ansible.builtin.include_tasks: privileges.yml
+  when: compose_host__account_ready

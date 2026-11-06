@@ -1,0 +1,127 @@
+---
+# Shared by main.yml and check.yml: refuse unsupported hosts and malformed input before anything runs.
+
+- name: Assert a supported operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] == '24.04'
+      - ansible_facts['architecture'] == 'x86_64'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: github_actions_runner supports Ubuntu 24.04 on x86_64 with systemd only.
+    quiet: true
+
+- name: Assert the registration scope and image pin
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner_scope_url is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?$')
+      - >-
+        github_actions_runner_image
+        is match('^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?@sha256:[a-f0-9]{64}$')
+      - github_actions_runner_group is string
+      - github_actions_runner_common_labels is sequence and github_actions_runner_common_labels is not string
+      - >-
+        github_actions_runner_common_labels | select('match', '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$') | list | length
+        == github_actions_runner_common_labels | length
+      - github_actions_runner_base_dir is match('^/[^ ]+$') and github_actions_runner_base_dir != '/'
+      - github_actions_runner_docker_socket is match('^/[^ ]+$')
+      - github_actions_runner_extra_env is mapping
+      - >-
+        github_actions_runner_extra_env.keys() | select('match', '^[A-Za-z_][A-Za-z0-9_]*$') | list | length
+        == github_actions_runner_extra_env | length
+      - github_actions_runner_extra_env.keys() | select('search', '(?i)(token|secret|passw|key|credential)') | list | length == 0
+      - github_actions_runner_identity_env.keys() | sort == ['labels', 'name', 'url']
+      - github_actions_runner_identity_env.values() | select('match', '^[A-Z][A-Z0-9_]*$') | list | length == 3
+      - github_actions_runner_registration_token_env is match('^[A-Z][A-Z0-9_]*$')
+      - github_actions_runner_removal_token_env is match('^[A-Z][A-Z0-9_]*$')
+    fail_msg: >-
+      Set github_actions_runner_scope_url (https repository or organization URL) and github_actions_runner_image
+      pinned by @sha256 digest; labels, paths and extra environment must be well formed and non-secret.
+    quiet: true
+
+- name: Assert instance definitions
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner_instance is mapping
+      - >-
+        github_actions_runner_instance.keys()
+        | difference(['name', 'labels', 'cpus', 'memory', 'state', 'volume', 'adopt', 'deregister', 'purge']) | length == 0
+      - github_actions_runner_instance.name is string
+      - github_actions_runner_instance.name is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - github_actions_runner_instance.labels is sequence and github_actions_runner_instance.labels is not string
+      - github_actions_runner_instance.labels | length > 0
+      - >-
+        github_actions_runner_instance.labels | select('match', '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$') | list | length
+        == github_actions_runner_instance.labels | length
+      - github_actions_runner_instance.cpus is number and github_actions_runner_instance.cpus > 0
+      - github_actions_runner_instance.memory is integer and github_actions_runner_instance.memory >= 1024
+      - github_actions_runner__state in ['present', 'stopped', 'absent']
+      - github_actions_runner__volume is match('^[a-zA-Z0-9][a-zA-Z0-9_.-]+$')
+      - github_actions_runner__adopt is boolean
+      - github_actions_runner__deregister is boolean
+      - github_actions_runner__purge is boolean
+      - not github_actions_runner__purge or github_actions_runner__state == 'absent'
+    fail_msg: >-
+      Instance {{ github_actions_runner_instance.name | default('?') }}: needs name, labels, cpus and memory (MiB);
+      state present|stopped|absent; purge only with state absent; no other keys.
+    quiet: true
+  loop: "{{ github_actions_runner_instances }}"
+  loop_control:
+    loop_var: github_actions_runner_instance
+    label: "{{ github_actions_runner_instance.name | default('?') }}"
+
+- name: Assert instance names and volumes are unique
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner_instances | map(attribute='name') | unique | length == github_actions_runner_instances | length
+      - github_actions_runner__volumes | unique | length == github_actions_runner__volumes | length
+    fail_msg: Instance names and data volumes must be unique on the host.
+    quiet: true
+
+- name: Assert runner limits fit the host
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner__active | map(attribute='cpus') | sum <= ansible_facts['processor_vcpus']
+      - >-
+        (github_actions_runner__active | map(attribute='memory') | sum) + github_actions_runner_memory_reserve_mb
+        <= ansible_facts['memtotal_mb']
+    fail_msg: >-
+      Runner limits exceed the host: {{ github_actions_runner__active | map(attribute='cpus') | sum }} CPUs for
+      {{ ansible_facts['processor_vcpus'] }} vCPUs, {{ github_actions_runner__active | map(attribute='memory') | sum }} MiB
+      plus {{ github_actions_runner_memory_reserve_mb }} MiB reserve for {{ ansible_facts['memtotal_mb'] }} MiB.
+    quiet: true
+
+- name: Read the Docker daemon
+  ansible.builtin.command:
+    argv: [docker, info, --format, json]
+  register: github_actions_runner__docker_info
+  changed_when: false
+  check_mode: false
+
+- name: Read the Compose plugin version
+  ansible.builtin.command:
+    argv: [docker, compose, version, --short]
+  register: github_actions_runner__compose_version
+  changed_when: false
+  check_mode: false
+
+- name: Read the Docker socket
+  ansible.builtin.stat:
+    path: "{{ github_actions_runner_docker_socket }}"
+  register: github_actions_runner__socket
+
+- name: Assert a rootful daemon with Compose v2 behind a root-owned socket
+  ansible.builtin.assert:
+    that:
+      - (github_actions_runner__docker_info.stdout | from_json).ServerVersion is defined
+      - >-
+        (github_actions_runner__docker_info.stdout | from_json).SecurityOptions | default([])
+        | select('search', 'rootless') | list | length == 0
+      - github_actions_runner__compose_version.stdout is version('2.18.0', '>=')
+      - github_actions_runner__socket.stat.exists
+      - github_actions_runner__socket.stat.issock
+      - github_actions_runner__socket.stat.uid == 0
+    fail_msg: >-
+      github_actions_runner needs a running rootful Docker daemon (apply container_engine with mode rootful first),
+      Compose >= 2.18 and a root-owned socket at {{ github_actions_runner_docker_socket }}.
+    quiet: true

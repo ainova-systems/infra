@@ -1,0 +1,42 @@
+---
+# Shared by main.yml and check.yml: inputs and platform, read-only.
+- name: Gather minimal facts when the play did not
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - min
+  when: ansible_facts.distribution is not defined
+
+- name: Assert supported platform
+  ansible.builtin.assert:
+    that:
+      - >-
+        container_engine_supported_os
+        | selectattr('distribution', 'equalto', ansible_facts.distribution)
+        | selectattr('version', 'equalto', ansible_facts.distribution_version)
+        | list | length > 0
+      - ansible_facts.architecture in ['x86_64', 'aarch64']
+    fail_msg: >-
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} {{ ansible_facts.architecture }}
+      is not supported by container_engine
+    quiet: true
+
+- name: Assert container_engine inputs
+  ansible.builtin.assert:
+    that:
+      - container_engine_mode in ['rootful', 'rootless']
+      - container_engine_mode == 'rootful' or container_engine_rootless_accounts | length > 0
+      - container_engine_rootless_accounts is sequence and container_engine_rootless_accounts is not string
+      - container_engine_rootless_accounts | reject('match', '^[a-z_][a-z0-9_-]{0,31}$') | list | length == 0
+      - "'root' not in container_engine_rootless_accounts"
+      - container_engine_rootless_accounts | unique | length == container_engine_rootless_accounts | length
+      - container_engine_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - container_engine_containerd_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - container_engine_compose_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - container_engine_apt_key_fingerprint is match('^[0-9A-F]{40}$')
+      - container_engine__cleanup.keep_label is match('^[^=\s]+=[^\s]+$')
+      - container_engine__cleanup.protected_container_labels is sequence
+    fail_msg: >-
+      container_engine needs container_engine_mode rootful|rootless (rootless with at least one account,
+      never root), exact X.Y.Z versions, a 40-hex signing-key fingerprint and a key=value keep label.
+    quiet: true

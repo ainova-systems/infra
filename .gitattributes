@@ -1,0 +1,4 @@
+# Every text file is LF in the index and in the working tree: bash rejects a CRLF
+# script and Ansible templates land on Linux hosts byte for byte.
+# The last matching pattern wins: any rule added below this line overrides it.
+* text=auto eol=lf

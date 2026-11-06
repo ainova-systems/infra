@@ -1,0 +1,19 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Runs one command as an unprivileged account against its own rootless daemon, with a clean
+# environment, its runtime directory and session bus. Root only; never targets root itself.
+set -eu
+[ "$(id -u)" = 0 ] || { echo 'Run as root' >&2; exit 1; }
+[ "$#" -ge 2 ] || { echo 'Usage: container-engine-as <account> <command> [args...]' >&2; exit 2; }
+account=$1
+shift
+uid=$(id -u "$account")
+[ "$uid" != 0 ] || { echo 'Refusing root' >&2; exit 1; }
+home=$(getent passwd "$account" | cut -d: -f6)
+exec runuser -u "$account" -- env -i \
+  HOME="$home" USER="$account" LOGNAME="$account" \
+  PATH="$home/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+  XDG_RUNTIME_DIR="/run/user/$uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+  DOCKER_HOST="unix:///run/user/$uid/docker.sock" \
+  "$@"

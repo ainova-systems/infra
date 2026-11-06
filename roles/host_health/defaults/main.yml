@@ -1,0 +1,29 @@
+---
+# Minimal health floor. Every control below fails the host when it is not met.
+host_health_min_free_disk_pct: 15
+# Mount points whose free space is checked.
+host_health_disk_paths:
+  - /
+host_health_min_free_mem_pct: 10
+# Failed systemd units that do not fail the check (exact unit names).
+host_health_ignored_failed_units: []
+# Fail when the host waits for a reboot after updates.
+host_health_fail_on_reboot_required: false
+
+# Container engine expected up. Defaults follow container_engine when the play also uses it.
+#   rootful: docker.service active; rootless: no system daemon required; none: not checked.
+host_health_container_engine_mode: "{{ container_engine_mode | default('none') }}"
+host_health_container_engine_rootless_accounts: "{{ container_engine_rootless_accounts | default([]) }}"
+
+# Backup freshness: the newest object under an S3-compatible prefix is younger than max_age_hours.
+# Omitted (empty) skips the control. Credentials are read from the control node's environment at run time:
+#   endpoint_url, bucket, prefix, max_age_hours, access_key_env, secret_key_env, region (optional)
+# Example: {endpoint_url: https://s3.example.invalid, bucket: backups, prefix: host-01/, max_age_hours: 26,
+#           access_key_env: BACKUP_READ_ACCESS_KEY, secret_key_env: BACKUP_READ_SECRET_KEY}
+host_health_backup: {}
+# Keys inspected, newest by name first. Fail-closed when backup names do not sort by time.
+host_health_backup_inspect_keys: 3
+
+host_health_supported_os:
+  - distribution: Ubuntu
+    version: "24.04"

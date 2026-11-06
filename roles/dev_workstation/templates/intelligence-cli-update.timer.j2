@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Intelligence CLI update
+
+[Timer]
+OnCalendar={{ dev_workstation_intelligence_update_on_calendar }}
+RandomizedDelaySec={{ dev_workstation_intelligence_update_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

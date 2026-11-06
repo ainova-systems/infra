@@ -1,0 +1,88 @@
+---
+# Cluster ports open to listed peers only. Rules carry the comment swarm_node; rules for unlisted sources,
+# for the management port on a worker and for ESP without encryption are removed.
+
+- name: Read the firewall state
+  ansible.builtin.command:
+    argv: [ufw, status]
+  register: swarm_node__ufw_status
+  changed_when: false
+  check_mode: false
+
+- name: Assert the firewall is active
+  ansible.builtin.assert:
+    that:
+      - swarm_node__ufw_status.stdout is search('^Status: active', multiline=true)
+    fail_msg: ufw is not active. Apply host_base (default-deny inbound) before opening cluster ports.
+    quiet: true
+
+- name: Allow cluster ports from peers
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ swarm_node__rule[0] }}"
+    to_port: "{{ swarm_node__rule[1].port | string }}"
+    proto: "{{ swarm_node__rule[1].proto }}"
+    comment: swarm_node
+  loop: "{{ swarm_node_peers | product(swarm_node__ports) | list }}"
+  loop_control:
+    loop_var: swarm_node__rule
+    label: "{{ swarm_node__rule[0] }} {{ swarm_node__rule[1].port }}/{{ swarm_node__rule[1].proto }}"
+
+- name: Allow encrypted overlay traffic from peers
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ swarm_node__peer }}"
+    proto: esp
+    comment: swarm_node
+  loop: "{{ swarm_node_peers if swarm_node_overlay_encryption else [] }}"
+  loop_control:
+    loop_var: swarm_node__peer
+
+- name: Read the added firewall rules
+  ansible.builtin.command:
+    argv: [ufw, show, added]
+  register: swarm_node__ufw_added
+  changed_when: false
+  check_mode: false
+
+# Sources this role opened ports to earlier but that are no longer listed.
+- name: Remove cluster rules for sources no longer listed
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ swarm_node__rule[0] }}"
+    to_port: "{{ swarm_node__rule[1].port | string }}"
+    proto: "{{ swarm_node__rule[1].proto }}"
+    delete: true
+  loop: "{{ swarm_node__stale_sources | product(swarm_node__common_ports + swarm_node__manager_ports) | list }}"
+  loop_control:
+    loop_var: swarm_node__rule
+    label: "{{ swarm_node__rule[0] }} {{ swarm_node__rule[1].port }}/{{ swarm_node__rule[1].proto }}"
+  vars:
+    swarm_node__stale_sources: >-
+      {{ swarm_node__ufw_added.stdout_lines | select('search', "comment 'swarm_node'")
+         | map('regex_search', 'from [^ ]+') | select | map('regex_replace', '^from ', '') | unique
+         | difference(swarm_node_peers) }}
+
+- name: Remove ESP rules for sources no longer listed or without encryption
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ swarm_node__peer }}"
+    proto: esp
+    delete: true
+  loop: >-
+    {{ (swarm_node__ufw_added.stdout_lines | select('search', "comment 'swarm_node'")
+        | map('regex_search', 'from [^ ]+') | select | map('regex_replace', '^from ', '') | unique
+        | difference(swarm_node_peers if swarm_node_overlay_encryption else [])) }}
+  loop_control:
+    loop_var: swarm_node__peer
+
+- name: Remove the management port from a worker's peers
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ swarm_node__peer }}"
+    to_port: "{{ swarm_node_listen_port | string }}"
+    proto: tcp
+    delete: true
+  loop: "{{ [] if swarm_node__is_manager else swarm_node_peers }}"
+  loop_control:
+    loop_var: swarm_node__peer

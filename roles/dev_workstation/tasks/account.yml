@@ -1,0 +1,131 @@
+---
+# One coding account, configured as that account: no account-controlled path is followed as root.
+# Loop var: dev_workstation_account. Writes no credential; token files stay the owner's step.
+
+- name: Resolve the home of {{ dev_workstation_account.name }}
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ dev_workstation_account.name }}"]
+  register: dev_workstation_passwd
+  changed_when: false
+  check_mode: false
+
+- name: Configure {{ dev_workstation_account.name }}
+  vars:
+    dev_workstation_home: "{{ dev_workstation_passwd.stdout.split(':')[5] }}"
+    dev_workstation_managed_gitconfig: "{{ dev_workstation_home }}/.config/git/credential-scopes"
+    dev_workstation_account_env:
+      HOME: "{{ dev_workstation_home }}"
+      PATH: "/usr/local/bin:/usr/bin:/bin:{{ dev_workstation_home }}/.dotnet/tools"
+      DOTNET_ROOT: "{{ dev_workstation_dotnet_root }}"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      COREPACK_DEFAULT_TO_LATEST: "0"
+  become: true
+  become_user: "{{ dev_workstation_account.name }}"
+  environment: "{{ dev_workstation_account_env }}"
+  block:
+    - name: Preflight credential paths of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: ["{{ dev_workstation_libexec_dir }}/credential-preflight", "{{ dev_workstation_managed_gitconfig }}"]
+        chdir: /
+      changed_when: false
+      check_mode: false
+
+    - name: Create private configuration directories of {{ dev_workstation_account.name }}
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode }}"
+        follow: false
+      loop:
+        - {path: "{{ dev_workstation_home }}/.config", mode: "0700"}
+        - {path: "{{ dev_workstation_home }}/.config/git", mode: "0700"}
+        - {path: "{{ dev_workstation_home }}/.config/git-credentials", mode: "0700"}
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Write the credential scopes of {{ dev_workstation_account.name }}
+      ansible.builtin.template:
+        src: credential-scopes.gitconfig.j2
+        dest: "{{ dev_workstation_managed_gitconfig }}"
+        mode: "0644"
+        follow: false
+
+    - name: Read Git settings of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: [git, config, --global, --get-all, "{{ item }}"]
+        chdir: /
+      loop: [user.name, user.email, include.path]
+      register: dev_workstation_git_current
+      changed_when: false
+      failed_when: dev_workstation_git_current.rc not in [0, 1]
+      check_mode: false
+
+    - name: Set Git identity of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: [git, config, --global, --replace-all, "{{ item.key }}", "{{ item.value }}"]
+        chdir: /
+      loop:
+        - {key: user.name, value: "{{ dev_workstation_account.git_name }}", index: 0}
+        - {key: user.email, value: "{{ dev_workstation_account.git_email }}", index: 1}
+      loop_control:
+        label: "{{ item.key }}"
+      when: dev_workstation_git_current.results[item.index].stdout_lines != [item.value]
+      changed_when: true
+
+    - name: Include the credential scopes in the Git configuration of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: [git, config, --global, --add, include.path, "{{ dev_workstation_managed_gitconfig }}"]
+        chdir: /
+      when: dev_workstation_managed_gitconfig not in dev_workstation_git_current.results[2].stdout_lines
+      changed_when: true
+
+    - name: Re-run the credential preflight of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: ["{{ dev_workstation_libexec_dir }}/credential-preflight", "{{ dev_workstation_managed_gitconfig }}"]
+        chdir: /
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Prefetch the fallback pnpm for {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: [/usr/local/bin/corepack, install, --global, "pnpm@{{ dev_workstation_pnpm_fallback_version }}"]
+        chdir: "{{ dev_workstation_home }}"
+        creates: "{{ dev_workstation_home }}/.cache/node/corepack/v1/pnpm/{{ dev_workstation_pnpm_fallback_version }}"
+
+    # Since SDK 8, `tool install` also moves an installed tool to the requested version.
+    - name: Install .NET tools for {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv:
+          - "{{ dev_workstation_dotnet_root }}/dotnet"
+          - tool
+          - install
+          - --global
+          - --allow-downgrade
+          - "{{ item.name }}"
+          - --version
+          - "{{ item.version }}"
+        chdir: /
+        creates: "{{ dev_workstation_home }}/.dotnet/tools/.store/{{ item.name | lower }}/{{ item.version }}"
+      loop: "{{ dev_workstation_dotnet_tools }}"
+      loop_control:
+        label: "{{ item.name }} {{ item.version }}"
+
+    - name: Resolve the Intelligence CLI for {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: [bash, -lc, command -v intelligence]
+        chdir: /
+      register: dev_workstation_intelligence_path
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Warn when the account shadows the system Intelligence CLI - {{ dev_workstation_account.name }}
+      ansible.builtin.debug:
+        msg: >-
+          {{ dev_workstation_account.name }} resolves intelligence to
+          '{{ dev_workstation_intelligence_path.stdout | default('') }}', not the system copy. The account's own
+          copy is not removed by provisioning; check.yml fails until the account uninstalls it.
+      when: dev_workstation_intelligence_path.stdout | default('') is not match('^/usr/(local/)?bin/intelligence$')

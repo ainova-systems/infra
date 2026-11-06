@@ -1,0 +1,120 @@
+---
+# Read-only check: deploy account, its keys and privileges, stack directories and env-file modes.
+
+- name: Validate the host and inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Assert the deploy account exists
+  ansible.builtin.assert:
+    that:
+      - compose_host__passwd.rc == 0
+      - compose_host__passwd.stdout.split(':')[5] == compose_host_deploy_home
+      - compose_host__passwd.stdout.split(':')[6] == compose_host_deploy_shell
+    fail_msg: "{{ compose_host_deploy_user }} is missing or has another home or shell; apply compose_host."
+    quiet: true
+
+- name: Check the deploy account's privileges
+  ansible.builtin.include_tasks: privileges.yml
+
+- name: Read the deploy account's password state
+  ansible.builtin.command:
+    argv: [passwd, --status, --, "{{ compose_host_deploy_user }}"]
+  register: compose_host__password_state
+  changed_when: false
+  check_mode: false
+
+- name: Read the deploy account's authorized keys
+  ansible.builtin.stat:
+    path: "{{ compose_host_deploy_home }}/.ssh/authorized_keys"
+    follow: false
+  register: compose_host__authorized_keys_stat
+
+- name: Read the deploy account's authorized key lines
+  ansible.builtin.command:
+    argv: [cat, --, "{{ compose_host_deploy_home }}/.ssh/authorized_keys"]
+  register: compose_host__authorized_keys
+  changed_when: false
+  check_mode: false
+  when: compose_host__authorized_keys_stat.stat.exists
+
+- name: Assert password login is locked and keys match the declaration
+  ansible.builtin.assert:
+    that:
+      - compose_host__password_state.stdout.split()[1] == 'L'
+      - >-
+        (compose_host_deploy_keys | length == 0 and not compose_host__authorized_keys_stat.stat.exists)
+        or (compose_host__authorized_keys_stat.stat.exists
+            and compose_host__authorized_keys_stat.stat.isreg
+            and compose_host__authorized_keys_stat.stat.pw_name == compose_host_deploy_user
+            and compose_host__authorized_keys_stat.stat.mode == '0600'
+            and (compose_host__authorized_keys.stdout_lines | select | list | sort) == (compose_host_deploy_keys | sort))
+    fail_msg: >-
+      {{ compose_host_deploy_user }} has a usable password, or its authorized_keys differs from compose_host_deploy_keys
+      (exact set, 0600, owned by the account).
+    quiet: true
+
+- name: Read the stack root
+  ansible.builtin.stat:
+    path: "{{ compose_host_root }}"
+    follow: false
+  register: compose_host__root_stat
+
+- name: Assert the stack root is root-owned
+  ansible.builtin.assert:
+    that:
+      - compose_host__root_stat.stat.exists and compose_host__root_stat.stat.isdir
+      - compose_host__root_stat.stat.uid == 0
+      - compose_host__root_stat.stat.mode == '0755'
+    fail_msg: "{{ compose_host_root }} must be a root-owned 0755 directory."
+    quiet: true
+
+- name: Read the stack directories
+  ansible.builtin.stat:
+    path: "{{ compose_host_root }}/{{ compose_host_stack }}"
+    follow: false
+  register: compose_host__stack_stats
+  loop: "{{ compose_host_stack_dirs }}"
+  loop_control:
+    loop_var: compose_host_stack
+
+- name: Read the private env-file directories
+  ansible.builtin.stat:
+    path: "{{ compose_host_root }}/{{ compose_host_stack }}/{{ compose_host_private_dir }}"
+    follow: false
+  register: compose_host__private_stats
+  loop: "{{ compose_host_stack_dirs }}"
+  loop_control:
+    loop_var: compose_host_stack
+
+- name: Read existing env files
+  ansible.builtin.stat:
+    path: "{{ compose_host_root }}/{{ compose_host_stack }}/{{ compose_host_private_dir }}/{{ compose_host_env_file }}"
+    get_checksum: false
+    follow: false
+  register: compose_host__env_files
+  loop: "{{ compose_host_stack_dirs }}"
+  loop_control:
+    loop_var: compose_host_stack
+
+- name: Assert stack directories and env files are private to the deploy account
+  ansible.builtin.assert:
+    that:
+      - compose_host__stack_stats.results[compose_host__index].stat.isdir | default(false)
+      - compose_host__stack_stats.results[compose_host__index].stat.pw_name == compose_host_deploy_user
+      - compose_host__stack_stats.results[compose_host__index].stat.mode == '0750'
+      - compose_host__private_stats.results[compose_host__index].stat.isdir | default(false)
+      - compose_host__private_stats.results[compose_host__index].stat.pw_name == compose_host_deploy_user
+      - compose_host__private_stats.results[compose_host__index].stat.mode == '0700'
+      - >-
+        not compose_host__env_files.results[compose_host__index].stat.exists
+        or (compose_host__env_files.results[compose_host__index].stat.isreg
+            and compose_host__env_files.results[compose_host__index].stat.pw_name == compose_host_deploy_user
+            and compose_host__env_files.results[compose_host__index].stat.mode == '0600')
+    fail_msg: >-
+      Stack {{ compose_host_stack_dirs[compose_host__index] }}: directory must be 0750, its {{ compose_host_private_dir }}
+      directory 0700 and any {{ compose_host_env_file }} a regular 0600 file, all owned by {{ compose_host_deploy_user }}.
+    quiet: true
+  loop: "{{ range(compose_host_stack_dirs | length) | list }}"
+  loop_control:
+    loop_var: compose_host__index
+    label: "{{ compose_host_stack_dirs[compose_host__index] }}"

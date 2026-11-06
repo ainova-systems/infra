@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Update the Intelligence CLI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart=/usr/bin/npm install --global --no-fund --no-audit {{ dev_workstation_intelligence_package }}@{{ dev_workstation_intelligence_update_version }}
+ExecStartPost=/usr/bin/intelligence --version

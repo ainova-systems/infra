@@ -1,0 +1,41 @@
+---
+# One pinned .NET SDK, verified by SHA-512 and extracted side by side. Loop var: dev_workstation_sdk.
+
+- name: Check whether the SDK is present - {{ dev_workstation_sdk.version }}
+  ansible.builtin.stat:
+    path: "{{ dev_workstation_dotnet_root }}/sdk/{{ dev_workstation_sdk.version }}"
+  register: dev_workstation_sdk_dir
+
+- name: Install SDK {{ dev_workstation_sdk.version }}
+  when: not dev_workstation_sdk_dir.stat.exists
+  block:
+    - name: Download SDK {{ dev_workstation_sdk.version }}
+      ansible.builtin.get_url:
+        url: "{{ dev_workstation_dotnet_download_url | replace('{version}', dev_workstation_sdk.version) }}"
+        dest: "{{ dev_workstation_state_dir }}/dotnet-sdk-{{ dev_workstation_sdk.version }}.tar.gz"
+        checksum: "sha512:{{ dev_workstation_sdk.sha512 }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Create the .NET root
+      ansible.builtin.file:
+        path: "{{ dev_workstation_dotnet_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Extract SDK {{ dev_workstation_sdk.version }}
+      ansible.builtin.unarchive:
+        src: "{{ dev_workstation_state_dir }}/dotnet-sdk-{{ dev_workstation_sdk.version }}.tar.gz"
+        dest: "{{ dev_workstation_dotnet_root }}"
+        remote_src: true
+        owner: root
+        group: root
+
+  always:
+    - name: Remove the SDK archive
+      ansible.builtin.file:
+        path: "{{ dev_workstation_state_dir }}/dotnet-sdk-{{ dev_workstation_sdk.version }}.tar.gz"
+        state: absent

@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: container_engine
+  namespace: ainova
+  author: Ainova Systems
+  description: Pinned Docker Engine, rootful or rootless per account, log rotation and a scheduled prune per daemon.
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - docker
+    - containers
+    - rootless
+dependencies: []

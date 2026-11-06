@@ -1,0 +1,190 @@
+---
+# Read-only check of one coding account, run as that account. Loop var: dev_workstation_account.
+
+- name: Resolve the home of {{ dev_workstation_account.name }}
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ dev_workstation_account.name }}"]
+  register: dev_workstation_passwd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert the account exists - {{ dev_workstation_account.name }}
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_passwd.rc == 0
+    fail_msg: "Coding account {{ dev_workstation_account.name }} does not exist."
+    quiet: true
+
+- name: Read sudo rights of {{ dev_workstation_account.name }}
+  ansible.builtin.command:
+    argv: [sudo, -n, -l, -U, "{{ dev_workstation_account.name }}"]
+  environment:
+    LC_ALL: C
+  register: dev_workstation_sudo
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert the account is unprivileged - {{ dev_workstation_account.name }}
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_passwd.stdout.split(':')[2] | int != 0
+      - dev_workstation_sudo.stdout is match('^User ' ~ dev_workstation_account.name ~ ' is not allowed to run sudo on .*\.$')
+      - dev_workstation_sudo.stdout_lines | length == 1
+    fail_msg: "Coding account {{ dev_workstation_account.name }} is root or can run sudo; coding accounts stay unprivileged."
+    quiet: true
+
+- name: Stat the home of {{ dev_workstation_account.name }}
+  ansible.builtin.stat:
+    path: "{{ dev_workstation_passwd.stdout.split(':')[5] }}"
+    follow: false
+  register: dev_workstation_home_stat
+
+- name: Assert the home is private - {{ dev_workstation_account.name }}
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_home_stat.stat.isdir | default(false)
+      - not dev_workstation_home_stat.stat.islnk
+      - dev_workstation_home_stat.stat.pw_name == dev_workstation_account.name
+      - dev_workstation_home_stat.stat.mode == dev_workstation_home_mode
+    fail_msg: "Home of {{ dev_workstation_account.name }} is not an owned directory with mode {{ dev_workstation_home_mode }}."
+    quiet: true
+
+- name: Check as the account - {{ dev_workstation_account.name }}
+  vars:
+    dev_workstation_home: "{{ dev_workstation_passwd.stdout.split(':')[5] }}"
+    dev_workstation_managed_gitconfig: "{{ dev_workstation_home }}/.config/git/credential-scopes"
+    dev_workstation_scopes: "{{ dev_workstation_account.credential_scopes | default(dev_workstation_default_credential_scopes) }}"
+  become: true
+  become_user: "{{ dev_workstation_account.name }}"
+  environment:
+    HOME: "{{ dev_workstation_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin:{{ dev_workstation_home }}/.dotnet/tools"
+    DOTNET_ROOT: "{{ dev_workstation_dotnet_root }}"
+    DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    DOTNET_NOLOGO: "1"
+    COREPACK_ENABLE_NETWORK: "0"
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    COREPACK_DEFAULT_TO_LATEST: "0"
+  block:
+    - name: Run the credential preflight for {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: ["{{ dev_workstation_libexec_dir }}/credential-preflight", "{{ dev_workstation_managed_gitconfig }}"]
+        chdir: /
+      register: dev_workstation_preflight
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert credential paths are safe - {{ dev_workstation_account.name }}
+      ansible.builtin.assert:
+        that:
+          - dev_workstation_preflight.rc == 0
+        fail_msg: "{{ dev_workstation_preflight.stderr | default('credential preflight failed') }}"
+        quiet: true
+
+    - name: Read the credential scopes of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: [cat, "{{ dev_workstation_managed_gitconfig }}"]
+      register: dev_workstation_scopes_file
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert the credential scopes match the role - {{ dev_workstation_account.name }}
+      ansible.builtin.assert:
+        that:
+          - dev_workstation_scopes_file.rc == 0
+          - dev_workstation_scopes_file.stdout | trim == lookup('ansible.builtin.template', 'credential-scopes.gitconfig.j2') | trim
+        fail_msg: "{{ dev_workstation_managed_gitconfig }} is missing or differs from the declared scopes."
+        quiet: true
+
+    - name: Read Git settings of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: [git, config, --get-all, "{{ item }}"]
+        chdir: /
+      loop: [user.name, user.email, include.path]
+      register: dev_workstation_git_current
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the effective helper list per scope of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: [git, config, --get-urlmatch, credential.helper, "{{ item.url }}/probe.git"]
+        chdir: /
+      loop: "{{ dev_workstation_scopes }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: dev_workstation_effective_helper
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert Git identity and scope routing of {{ dev_workstation_account.name }}
+      ansible.builtin.assert:
+        that:
+          - dev_workstation_git_current.results[0].stdout_lines == [dev_workstation_account.git_name]
+          - dev_workstation_git_current.results[1].stdout_lines == [dev_workstation_account.git_email]
+          - dev_workstation_managed_gitconfig in dev_workstation_git_current.results[2].stdout_lines
+          - dev_workstation_effective_helper.results | map(attribute='stdout') | list
+            == dev_workstation_scopes | map(attribute='name') | map('regex_replace', '^', '!' ~ dev_workstation_credential_helper ~ ' ') | list
+        fail_msg: "Git identity, include or credential routing of {{ dev_workstation_account.name }} differs from the role."
+        quiet: true
+
+    - name: Read toolchain access of {{ dev_workstation_account.name }}
+      ansible.builtin.command:
+        argv: "{{ item.argv }}"
+        chdir: /
+      loop:
+        - {name: dotnet, argv: ["{{ dev_workstation_dotnet_root }}/dotnet", --list-sdks]}
+        - {name: pnpm, argv: [/usr/local/bin/pnpm, --version]}
+        - {name: tools, argv: ["{{ dev_workstation_dotnet_root }}/dotnet", tool, list, --global]}
+        - {name: intelligence, argv: [bash, -lc, command -v intelligence]}
+        - {name: intelligence-run, argv: [intelligence, --version]}
+      loop_control:
+        label: "{{ item.name }}"
+      register: dev_workstation_access
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert toolchain access of {{ dev_workstation_account.name }}
+      vars:
+        dev_workstation_a: "{{ dict(dev_workstation_access.results | map(attribute='item.name') | zip(dev_workstation_access.results)) }}"
+        dev_workstation_tool_text: "{{ '|' ~ (dev_workstation_a.tools.stdout_lines | map('lower') | map('split') | map('join', ' ') | join(' |')) ~ ' |' }}"
+        dev_workstation_expected_tools: >-
+          {{ dev_workstation_dotnet_tools | map(attribute='name') | map('lower')
+             | zip(dev_workstation_dotnet_tools | map(attribute='version')) | map('join', ' ')
+             | map('regex_replace', '^', '|') | map('regex_replace', '$', ' ') | list }}
+      ansible.builtin.assert:
+        that:
+          - dev_workstation_a.dotnet.rc == 0
+          - dev_workstation_a.pnpm.rc == 0
+          - dev_workstation_a.tools.rc == 0
+          - dev_workstation_expected_tools | reject('in', dev_workstation_tool_text) | list | length == 0
+          - dev_workstation_a.intelligence.stdout is match('^/usr/(local/)?bin/intelligence$')
+          - dev_workstation_a['intelligence-run'].rc == 0
+        fail_msg: >-
+          Toolchain access of {{ dev_workstation_account.name }} is incomplete: dotnet rc {{ dev_workstation_a.dotnet.rc }},
+          offline pnpm rc {{ dev_workstation_a.pnpm.rc }}, intelligence resolves to
+          '{{ dev_workstation_a.intelligence.stdout | default('') }}' (an account-owned copy shadows the system one).
+        quiet: true
+
+    - name: Stat token files of {{ dev_workstation_account.name }}
+      ansible.builtin.stat:
+        path: "{{ dev_workstation_home }}/.config/git-credentials/{{ item.name }}.env"
+        follow: false
+        get_checksum: false
+      loop: "{{ dev_workstation_scopes }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: dev_workstation_token_files
+
+    - name: Report credential state, never a failure - {{ dev_workstation_account.name }}
+      ansible.builtin.debug:
+        msg: >-
+          {{ dev_workstation_account.name }} credential scopes:
+          {% for r in dev_workstation_token_files.results %}{{ r.item.name }}=
+          {{- 'stored' if r.stat.exists else 'pending owner authentication' }}{{ ', ' if not loop.last }}{% endfor %}

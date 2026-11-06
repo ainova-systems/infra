@@ -1,0 +1,175 @@
+---
+# Install one pinned artifact into its own root-owned, versioned directory.
+# Digest-verified download, unprivileged extraction and probe; never executed as root.
+
+- name: Read installed marker of {{ agent_workstation__tool.name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__tool.dir }}/.sha256"
+    get_checksum: false
+  register: agent_workstation__marker
+
+- name: Read marker digest of {{ agent_workstation__tool.name }}
+  ansible.builtin.slurp:
+    src: "{{ agent_workstation__tool.dir }}/.sha256"
+  register: agent_workstation__marker_content
+  when: agent_workstation__marker.stat.exists
+
+- name: Read installed executable of {{ agent_workstation__tool.name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__tool.path }}"
+    get_checksum: false
+  register: agent_workstation__installed
+
+- name: Decide whether the installed version is current for {{ agent_workstation__tool.name }}
+  ansible.builtin.set_fact:
+    agent_workstation__current: >-
+      {{ agent_workstation__marker.stat.exists
+         and (agent_workstation__marker_content.content | b64decode | trim) == agent_workstation__tool.sha256
+         and agent_workstation__installed.stat.exists
+         and agent_workstation__installed.stat.isreg
+         and agent_workstation__installed.stat.executable }}
+
+- name: Assert no partial install of {{ agent_workstation__tool.name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__tool.dir }}"
+    get_checksum: false
+  register: agent_workstation__target
+  failed_when: agent_workstation__target.stat.exists and not agent_workstation__current
+  when: not agent_workstation__current
+
+- name: Report pending install of {{ agent_workstation__tool.name }}
+  ansible.builtin.debug:
+    msg: "would install {{ agent_workstation__tool.name }} {{ agent_workstation__tool.version }}"
+  when: not agent_workstation__current and ansible_check_mode
+
+- name: Install {{ agent_workstation__tool.name }}
+  when: not agent_workstation__current and not ansible_check_mode
+  block:
+    - name: Create staging directory for {{ agent_workstation__tool.name }}
+      ansible.builtin.tempfile:
+        state: directory
+        path: "{{ agent_workstation_stage_dir }}"
+        prefix: "{{ agent_workstation__tool.name }}."
+      register: agent_workstation__stage
+
+    - name: Open staging directory to the extraction identity
+      ansible.builtin.file:
+        path: "{{ agent_workstation__stage.path }}"
+        mode: "0755"
+
+    - name: Download {{ agent_workstation__tool.name }}
+      ansible.builtin.get_url:
+        url: "{{ agent_workstation__tool.url }}"
+        dest: "{{ agent_workstation__stage.path }}/download"
+        checksum: sha256:{{ agent_workstation__tool.sha256 }}
+        mode: "0644"
+        timeout: 300
+        validate_certs: true
+
+    - name: Create unprivileged extraction directory
+      ansible.builtin.file:
+        path: "{{ agent_workstation__stage.path }}/{{ item }}"
+        state: directory
+        owner: nobody
+        group: nogroup
+        mode: "{{ '0700' if item == 'probe' else '0755' }}"
+      loop: [files, probe]
+
+    - name: Place binary {{ agent_workstation__tool.name }}
+      ansible.builtin.copy:
+        src: "{{ agent_workstation__stage.path }}/download"
+        dest: "{{ agent_workstation__stage.path }}/files/{{ agent_workstation__tool.executable }}"
+        remote_src: true
+        mode: "0755"
+      when: agent_workstation__tool.format == 'binary'
+
+    - name: Extract archive as nobody for {{ agent_workstation__tool.name }}
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - nobody
+          - --
+          - tar
+          - --no-same-owner
+          - --no-same-permissions
+          - --strip-components={{ agent_workstation__tool.strip }}
+          - -xzf
+          - "{{ agent_workstation__stage.path }}/download"
+          - -C
+          - "{{ agent_workstation__stage.path }}/files"
+      changed_when: true
+      when: agent_workstation__tool.format == 'tar.gz'
+
+    - name: Extract package as nobody without maintainer scripts for {{ agent_workstation__tool.name }}
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - nobody
+          - --
+          - dpkg-deb
+          - -x
+          - "{{ agent_workstation__stage.path }}/download"
+          - "{{ agent_workstation__stage.path }}/files"
+      changed_when: true
+      when: agent_workstation__tool.format == 'deb'
+
+    - name: Read extracted executable of {{ agent_workstation__tool.name }}
+      ansible.builtin.stat:
+        path: "{{ agent_workstation__stage.path }}/files/{{ agent_workstation__tool.executable }}"
+        get_checksum: false
+      register: agent_workstation__extracted
+      failed_when: >-
+        not agent_workstation__extracted.stat.exists
+        or agent_workstation__extracted.stat.islnk
+        or not agent_workstation__extracted.stat.isreg
+        or not agent_workstation__extracted.stat.executable
+
+    - name: Probe version as nobody for {{ agent_workstation__tool.name }}
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - nobody
+          - --
+          - env
+          - -i
+          - HOME={{ agent_workstation__stage.path }}/probe
+          - PATH=/usr/bin:/bin
+          - "{{ agent_workstation__stage.path }}/files/{{ agent_workstation__tool.executable }}"
+          - --version
+      register: agent_workstation__probe
+      changed_when: false
+      failed_when: >-
+        agent_workstation__probe.rc != 0
+        or agent_workstation__tool.check not in agent_workstation__probe.stdout
+
+    - name: Hand extracted files to root for {{ agent_workstation__tool.name }}
+      ansible.builtin.file:
+        path: "{{ agent_workstation__stage.path }}/files"
+        state: directory
+        recurse: true
+        owner: root
+        group: root
+        mode: go-w
+
+    - name: Record digest of {{ agent_workstation__tool.name }}
+      ansible.builtin.copy:
+        content: "{{ agent_workstation__tool.sha256 }}\n"
+        dest: "{{ agent_workstation__stage.path }}/files/.sha256"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Publish {{ agent_workstation__tool.name }}
+      ansible.builtin.command:
+        argv: [mv, -T, "{{ agent_workstation__stage.path }}/files", "{{ agent_workstation__tool.dir }}"]
+        creates: "{{ agent_workstation__tool.dir }}"
+
+  always:
+    - name: Remove staging directory of {{ agent_workstation__tool.name }}
+      ansible.builtin.file:
+        path: "{{ agent_workstation__stage.path }}"
+        state: absent
+      when: agent_workstation__stage.path is defined

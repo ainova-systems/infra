@@ -1,0 +1,72 @@
+---
+# Remove the forge registration of one stopped instance before its container or volume goes. A removal token
+# differs from a registration token; like it, it travels on stdin only (see register.yml).
+
+- name: Prompt for a removal token
+  ansible.builtin.pause:
+    prompt: >-
+      Removal token for {{ github_actions_runner_scope_url }} (input hidden; set
+      {{ github_actions_runner_removal_token_env }} on the controller to skip this prompt)
+    echo: false
+  register: github_actions_runner__removal_prompt
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - github_actions_runner_token_prompt | bool
+    - github_actions_runner__removal_token | length == 0
+
+- name: Keep the prompted removal token for this run only
+  ansible.builtin.set_fact:
+    github_actions_runner__prompted_removal_token: "{{ github_actions_runner__removal_prompt.user_input }}"
+  no_log: true
+  when: github_actions_runner__removal_prompt is not skipped
+
+- name: Assert a removal token is available
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner__has_token
+    fail_msg: >-
+      {{ github_actions_runner__name }} is registered. Create a removal token for {{ github_actions_runner_scope_url }}
+      and pass it in {{ github_actions_runner_removal_token_env }} or at the prompt, or set deregister: false on the
+      instance to keep the forge registration deliberately.
+    quiet: true
+  vars:
+    github_actions_runner__has_token: "{{ github_actions_runner__removal_token | length > 0 }}"
+  when: not ansible_check_mode
+
+- name: Deregister from the forge {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ github_actions_runner__dir }}"
+      - --file
+      - "{{ github_actions_runner__definition }}"
+      - run
+      - --rm
+      - --no-deps
+      - -T
+      - --entrypoint
+      - /bin/sh
+      - runner
+      - -c
+      - "{{ github_actions_runner__stdin_exec }}"
+      - "{{ github_actions_runner_data_path }}/config.sh"
+      - remove
+      - --unattended
+    stdin: "{{ github_actions_runner__removal_token }}"
+  register: github_actions_runner__deregistration
+  changed_when: github_actions_runner__deregistration.rc == 0
+  failed_when: false
+  no_log: true
+
+- name: Report a failed deregistration of {{ github_actions_runner__name }}
+  ansible.builtin.fail:
+    msg: >-
+      Deregistration of {{ github_actions_runner__name }} failed (rc {{ github_actions_runner__deregistration.rc }});
+      the container and volume were kept:
+      {{ (github_actions_runner__deregistration.stdout_lines | default([]))[-15:] | join(' | ') }}
+  when:
+    - github_actions_runner__deregistration is not skipped
+    - github_actions_runner__deregistration.rc != 0

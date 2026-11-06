@@ -1,0 +1,112 @@
+---
+# Read-only. Every probe runs in --check too and never reports a change; one assert at the end
+# lists every failed control and fails the host.
+- name: Validate inputs and platform
+  ansible.builtin.include_tasks: assert.yml
+
+- name: Read admin account
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ host_base_admin_user }}"]
+  register: host_base__getent
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read admin authorized keys
+  ansible.builtin.command:
+    argv: [cat, "{{ host_base__getent.stdout.split(':')[5] }}/.ssh/authorized_keys"]
+  register: host_base__keys
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: host_base__getent.rc == 0
+
+- name: Read admin sudoers file
+  ansible.builtin.stat:
+    path: "{{ host_base__sudoers_file }}"
+  register: host_base__sudoers
+
+- name: Read effective sshd configuration
+  ansible.builtin.command:
+    argv: [sshd, -T]
+  register: host_base__sshd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read firewall status
+  ansible.builtin.command:
+    argv: [ufw, status, verbose]
+  register: host_base__ufw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read unattended upgrade settings
+  ansible.builtin.command:
+    argv: [apt-config, dump, APT::Periodic]
+  register: host_base__apt_periodic
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read unattended upgrades service state
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, unattended-upgrades]
+  register: host_base__uu_enabled
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read time sync state
+  ansible.builtin.command:
+    argv: [timedatectl, show, --property=NTP, --property=NTPSynchronized]
+  register: host_base__time
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert host_base controls
+  ansible.builtin.assert:
+    that:
+      - host_base__failures | length == 0
+    fail_msg: "host_base FAILED: {{ host_base__failures | join('; ') }}"
+    success_msg: "host_base OK: admin {{ host_base_admin_user }}, key-only SSH on {{ host_base_ssh_port }}, firewall default deny, updates and time sync"
+  vars:
+    host_base__key_bodies: "{{ host_base_admin_keys | map('split', ' ') | map(attribute=1) | list }}"
+    host_base__present_keys: >-
+      {{ (host_base__keys.stdout | default('')).splitlines() | select('match', '^(ssh-|ecdsa-|sk-)[^ ]+ [^ ]')
+         | map('split', ' ') | map(attribute=1) | list }}
+    host_base__missing_rules: >-
+      {%- for r in host_base__allow_rules -%}
+      {%- set source = 'Anywhere' if r.from == 'any' else r.from -%}
+      {%- if host_base__ufw.stdout is not search('(?m)^' ~ (r.port | string) ~ '/' ~ r.proto ~ '\s+ALLOW IN\s+' ~ (source | regex_escape) ~ '(\s|$)') -%}
+      {{ r.port }}/{{ r.proto }} from {{ r.from }},
+      {%- endif -%}
+      {%- endfor -%}
+    host_base__failures: >-
+      {{
+        ([] if host_base__getent.rc == 0 else ['admin account ' ~ host_base_admin_user ~ ' missing'])
+        + ([] if host_base__key_bodies | difference(host_base__present_keys) | length == 0 else ['admin authorized_keys lacks a declared key'])
+        + ([] if not host_base_admin_keys_exclusive | bool or host_base__present_keys | difference(host_base__key_bodies) | length == 0
+           else ['admin authorized_keys holds an undeclared key'])
+        + ([] if (host_base__sudoers.stat.exists | default(false)) == (host_base_admin_sudo_nopasswd | bool)
+           else ['admin sudoers file does not match host_base_admin_sudo_nopasswd'])
+        + ([] if host_base__sshd.rc == 0 else ['sshd -T failed'])
+        + ([] if host_base__sshd.stdout is search('(?m)^permitrootlogin no$') else ['sshd permits root login'])
+        + ([] if host_base__sshd.stdout is search('(?m)^passwordauthentication no$') else ['sshd allows password login'])
+        + ([] if host_base__sshd.stdout is search('(?m)^kbdinteractiveauthentication no$') else ['sshd allows keyboard-interactive login'])
+        + ([] if host_base__sshd.stdout is search('(?m)^pubkeyauthentication yes$') else ['sshd public key login disabled'])
+        + ([] if host_base__sshd.stdout is search('(?m)^port ' ~ (host_base_ssh_port | string) ~ '$')
+           else ['sshd not on port ' ~ (host_base_ssh_port | string)])
+        + ([] if host_base__sshd.stdout is search('(?m)^allowusers(\s\S+)*\s' ~ (host_base_admin_user | regex_escape) ~ '(\s|$)')
+           else ['sshd AllowUsers lacks the admin'])
+        + ([] if host_base__ufw.stdout is search('(?m)^Status: active$') else ['firewall inactive'])
+        + ([] if host_base__ufw.stdout is search('Default: deny \(incoming\)') else ['firewall inbound default is not deny'])
+        + ([] if host_base__missing_rules == '' else ['firewall lacks allows: ' ~ host_base__missing_rules | regex_replace(',$', '')])
+        + ([] if not host_base_auto_updates | bool or host_base__apt_periodic.stdout is search('Unattended-Upgrade "1"')
+           else ['unattended upgrades not scheduled'])
+        + ([] if not host_base_auto_updates | bool or host_base__uu_enabled.stdout | trim == 'enabled' else ['unattended-upgrades service not enabled'])
+        + ([] if host_base__time.stdout is search('(?m)^NTP=yes$') else ['time sync disabled'])
+        + ([] if host_base__time.stdout is search('(?m)^NTPSynchronized=yes$') else ['clock not synchronized'])
+      }}

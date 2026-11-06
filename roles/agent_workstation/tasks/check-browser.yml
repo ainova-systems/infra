@@ -1,0 +1,114 @@
+---
+# Read-only browser checks. The per-account launch check runs in check-account.yml.
+
+- name: Read installed Playwright Core version
+  ansible.builtin.command:
+    argv:
+      - "{{ agent_workstation_node_executable }}"
+      - -p
+      - require('{{ agent_workstation__playwright_dir }}/node_modules/playwright-core/package.json').version
+  register: agent_workstation__check_pw_version
+  changed_when: false
+  failed_when: agent_workstation__check_pw_version.rc != 0 or agent_workstation__check_pw_version.stdout | trim != agent_workstation_playwright_version
+  check_mode: false
+
+- name: Read Playwright lockfile
+  ansible.builtin.command:
+    argv: [cat, "{{ agent_workstation__playwright_dir }}/package-lock.json"]
+  register: agent_workstation__check_pw_lock
+  changed_when: false
+  check_mode: false
+
+- name: Check Playwright lockfile matches the pin
+  ansible.builtin.assert:
+    that:
+      - agent_workstation__check_pw_lock.stdout | trim == agent_workstation__expected | trim
+    fail_msg: Playwright lockfile differs from the pinned version and integrity
+    quiet: true
+  vars:
+    agent_workstation__expected: "{{ lookup('ansible.builtin.template', 'playwright-package-lock.json.j2') }}"
+
+- name: Find unsafe entries in the Playwright installation
+  ansible.builtin.command:
+    argv: [find, "{{ agent_workstation__playwright_dir }}", -xdev, "(", -not, -user, root, -o, "(", "!", -type, l, -perm, /022, ")", ")", -print, -quit]
+  register: agent_workstation__check_pw_unsafe
+  changed_when: false
+  check_mode: false
+  failed_when: agent_workstation__check_pw_unsafe.rc != 0 or agent_workstation__check_pw_unsafe.stdout | length > 0
+
+- name: Check Chrome ownership
+  ansible.builtin.include_tasks: chrome-safety.yml
+
+- name: Read AppArmor profile list
+  ansible.builtin.stat:
+    path: /sys/kernel/security/apparmor/profiles
+    get_checksum: false
+  register: agent_workstation__check_apparmor
+
+- name: Check Chrome AppArmor profile is loaded
+  ansible.builtin.command:
+    argv: [grep, -E, '^chrome \(', /sys/kernel/security/apparmor/profiles]
+  register: agent_workstation__check_apparmor_chrome
+  changed_when: false
+  check_mode: false
+  failed_when: agent_workstation__check_apparmor_chrome.rc != 0
+  when: agent_workstation__check_apparmor.stat.exists and agent_workstation__check_apparmor.stat.readable
+
+- name: Read google-chrome launcher
+  ansible.builtin.stat:
+    path: /usr/local/bin/google-chrome
+    get_checksum: false
+  register: agent_workstation__check_chrome_link
+  failed_when: >-
+    not (agent_workstation__check_chrome_link.stat.islnk | default(false))
+    or agent_workstation__check_chrome_link.stat.lnk_target != agent_workstation__chrome
+
+- name: Read managed browser files
+  ansible.builtin.command:
+    argv: [cat, "{{ item.path }}"]
+  register: agent_workstation__check_browser_files
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop:
+    - {path: /usr/local/bin/agent-playwright, template: agent-playwright.sh.j2}
+    - {path: "{{ agent_workstation_share_dir }}/playwright-smoke.cjs", file: playwright-smoke.cjs}
+    - {path: "{{ agent_workstation_share_dir }}/playwright.md", file: playwright.md}
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Check managed browser files match the desired state
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == agent_workstation__expected | trim
+    fail_msg: "{{ item.item.path }} is missing or differs from the desired state"
+    quiet: true
+  vars:
+    agent_workstation__expected: >-
+      {{ lookup('ansible.builtin.template', item.item.template) if item.item.template is defined
+         else lookup('ansible.builtin.file', item.item.file) }}
+  loop: "{{ agent_workstation__check_browser_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Read managed browser file owners
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  register: agent_workstation__check_browser_owners
+  loop:
+    - /usr/local/bin/agent-playwright
+    - "{{ agent_workstation_share_dir }}/playwright-smoke.cjs"
+    - "{{ agent_workstation_share_dir }}/playwright.md"
+
+- name: Check managed browser files are root-owned regular files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists and item.stat.isreg and not item.stat.islnk
+      - item.stat.pw_name == 'root' and not item.stat.wgrp and not item.stat.woth
+    fail_msg: "unsafe managed browser file: {{ item.item }}"
+    quiet: true
+  loop: "{{ agent_workstation__check_browser_owners.results }}"
+  loop_control:
+    label: "{{ item.item }}"

@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: host_health
+  namespace: ainova
+  author: Ainova Systems
+  description: Read-only host health floor - uptime, memory, disk, failed units, container engine and backup freshness.
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - monitoring
+    - health
+dependencies: []

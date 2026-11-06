@@ -1,0 +1,257 @@
+---
+# Apply. Idempotent and fail-closed: inputs are asserted before the first change.
+# Never clones a repository, never syncs project Intelligence, never stores a credential.
+
+- name: Validate host and inputs
+  ansible.builtin.include_tasks: assert.yml
+
+- name: Install distribution packages
+  ansible.builtin.apt:
+    name: "{{ dev_workstation_packages }}"
+    state: present
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create role directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ dev_workstation_state_dir }}"
+    - "{{ dev_workstation_tools_dir }}"
+    - "{{ dev_workstation_config_dir }}"
+    - "{{ dev_workstation_libexec_dir }}"
+    - /etc/apt/keyrings
+
+# --- Accounts -------------------------------------------------------------------------------------
+
+- name: Create coding accounts
+  ansible.builtin.user:
+    name: "{{ dev_workstation_account.name }}"
+    shell: "{{ dev_workstation_account_shell }}"
+    create_home: true
+    state: present
+  loop: "{{ dev_workstation_accounts }}"
+  loop_control:
+    loop_var: dev_workstation_account
+    label: "{{ dev_workstation_account.name }}"
+  register: dev_workstation_users
+
+- name: Read sudo rights of coding accounts
+  ansible.builtin.command:
+    argv: [sudo, -n, -l, -U, "{{ dev_workstation_account.name }}"]
+  environment:
+    LC_ALL: C
+  register: dev_workstation_sudo
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop: "{{ dev_workstation_accounts }}"
+  loop_control:
+    loop_var: dev_workstation_account
+    label: "{{ dev_workstation_account.name }}"
+
+# Some sudo implementations exit 0 on a denied listing; require the denial text.
+- name: Assert coding accounts are unprivileged
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_user.dev_workstation_account.name != 'root'
+      - dev_workstation_user.stdout is match('^User ' ~ dev_workstation_user.dev_workstation_account.name ~ ' is not allowed to run sudo on .*\.$')
+      - dev_workstation_user.stdout_lines | length == 1
+    fail_msg: "Coding account {{ dev_workstation_user.dev_workstation_account.name }} can run sudo; coding accounts stay unprivileged."
+    quiet: true
+  loop: "{{ dev_workstation_sudo.results }}"
+  loop_control:
+    loop_var: dev_workstation_user
+    label: "{{ dev_workstation_user.dev_workstation_account.name }}"
+  # A check-mode run against a new host has not created the account yet.
+  when: not ansible_check_mode or 'unknown user' not in ((dev_workstation_user.stdout ~ dev_workstation_user.stderr) | lower)
+
+- name: Restrict coding account homes
+  ansible.builtin.file:
+    path: "{{ dev_workstation_user.home }}"
+    state: directory
+    owner: "{{ dev_workstation_user.name }}"
+    mode: "{{ dev_workstation_home_mode }}"
+    follow: false
+  loop: "{{ dev_workstation_users.results }}"
+  loop_control:
+    loop_var: dev_workstation_user
+    label: "{{ dev_workstation_user.name }}"
+  when: dev_workstation_user.home is defined
+
+# --- Signed package sources -----------------------------------------------------------------------
+
+- name: Install signed package sources
+  ansible.builtin.include_tasks: apt_source.yml
+  loop:
+    - name: nodesource
+      key_url: "{{ dev_workstation_node_key_url }}"
+      key_file: /etc/apt/keyrings/nodesource.asc
+      fingerprints: "{{ dev_workstation_node_key_fingerprints }}"
+      source: "deb [arch=amd64 signed-by=/etc/apt/keyrings/nodesource.asc] {{ dev_workstation_node_repo_url }} nodistro main"
+      pin_package: nodejs
+      pin_origin: deb.nodesource.com
+    - name: github-cli
+      key_url: "{{ dev_workstation_gh_key_url }}"
+      key_file: /etc/apt/keyrings/githubcli-archive-keyring.gpg
+      fingerprints: "{{ dev_workstation_gh_key_fingerprints }}"
+      source: "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] {{ dev_workstation_gh_repo_url }} stable main"
+      pin_package: gh
+      pin_origin: cli.github.com
+  loop_control:
+    loop_var: dev_workstation_source
+    label: "{{ dev_workstation_source.name }}"
+
+# --- Node.js, Corepack, pnpm ----------------------------------------------------------------------
+
+- name: Install pinned Node.js and GitHub CLI
+  ansible.builtin.apt:
+    name:
+      - "nodejs={{ dev_workstation_node_package_version }}"
+      - "gh={{ dev_workstation_gh_version }}"
+    state: present
+    install_recommends: false
+    allow_downgrade: true
+    allow_change_held_packages: true
+    update_cache: true
+
+- name: Hold pinned Node.js and GitHub CLI
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - nodejs
+    - gh
+
+- name: Install pinned Corepack into its own prefix
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/npm
+      - install
+      - --global
+      - --prefix
+      - "{{ dev_workstation_tools_dir }}/corepack-{{ dev_workstation_corepack_version }}"
+      - --ignore-scripts
+      - --no-audit
+      - --no-fund
+      - "corepack@{{ dev_workstation_corepack_version }}"
+    creates: "{{ dev_workstation_tools_dir }}/corepack-{{ dev_workstation_corepack_version }}/lib/node_modules/corepack/package.json"
+
+- name: Link Corepack and the pnpm shims onto PATH
+  ansible.builtin.file:
+    src: "{{ dev_workstation_tools_dir }}/corepack-{{ dev_workstation_corepack_version }}/{{ item.src }}"
+    dest: "/usr/local/bin/{{ item.dest }}"
+    state: link
+    force: true
+  loop:
+    - {src: bin/corepack, dest: corepack}
+    - {src: lib/node_modules/corepack/dist/pnpm.js, dest: pnpm}
+    - {src: lib/node_modules/corepack/dist/pnpx.js, dest: pnpx}
+  loop_control:
+    label: "{{ item.dest }}"
+
+# --- .NET -----------------------------------------------------------------------------------------
+
+- name: Install pinned .NET SDKs
+  ansible.builtin.include_tasks: dotnet_sdk.yml
+  loop: "{{ dev_workstation_dotnet_sdks }}"
+  loop_control:
+    loop_var: dev_workstation_sdk
+    label: "{{ dev_workstation_sdk.version }}"
+
+- name: Link dotnet onto PATH
+  ansible.builtin.file:
+    src: "{{ dev_workstation_dotnet_root }}/dotnet"
+    dest: /usr/local/bin/dotnet
+    state: link
+    force: true
+
+# --- Shared environment ---------------------------------------------------------------------------
+
+- name: Write the shared toolchain environment
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {src: toolchain.env.j2, dest: "{{ dev_workstation_config_dir }}/toolchain.env"}
+    - {src: toolchain-profile.sh.j2, dest: /etc/profile.d/dev-workstation-toolchain.sh}
+  loop_control:
+    label: "{{ item.dest }}"
+
+# --- Intelligence CLI -----------------------------------------------------------------------------
+
+- name: Read the installed Intelligence CLI version
+  ansible.builtin.command:
+    argv: [/usr/bin/npm, ls, --global, --depth=0, --json, "{{ dev_workstation_intelligence_package }}"]
+  register: dev_workstation_intelligence_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install the pinned Intelligence CLI when missing or older
+  vars:
+    dev_workstation_intelligence_current: >-
+      {{ ((dev_workstation_intelligence_installed.stdout | default('{}', true) | from_json).dependencies | default({}))
+         [dev_workstation_intelligence_package].version | default('0.0.0') }}
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/npm
+      - install
+      - --global
+      - --no-audit
+      - --no-fund
+      - "{{ dev_workstation_intelligence_package }}@{{ dev_workstation_intelligence_version }}"
+  changed_when: true
+  when: dev_workstation_intelligence_current is version(dev_workstation_intelligence_version, '<')
+
+- name: Write the Intelligence CLI update units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - intelligence-cli-update.service
+    - intelligence-cli-update.timer
+  notify: Restart Intelligence CLI update timer
+
+- name: Set the Intelligence CLI update timer state
+  ansible.builtin.systemd_service:
+    name: intelligence-cli-update.timer
+    enabled: "{{ dev_workstation_intelligence_update_enabled }}"
+    state: "{{ 'started' if dev_workstation_intelligence_update_enabled else 'stopped' }}"
+    daemon_reload: true
+
+# --- Git credential scopes (system part) ----------------------------------------------------------
+
+- name: Install the credential helper and preflight
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+    follow: false
+  loop:
+    - {src: git-credential-scope.sh.j2, dest: "{{ dev_workstation_credential_helper }}"}
+    - {src: credential-preflight.sh.j2, dest: "{{ dev_workstation_libexec_dir }}/credential-preflight"}
+  loop_control:
+    label: "{{ item.dest }}"
+
+# --- Per account ----------------------------------------------------------------------------------
+
+- name: Configure each coding account as that account
+  ansible.builtin.include_tasks: account.yml
+  loop: "{{ dev_workstation_accounts }}"
+  loop_control:
+    loop_var: dev_workstation_account
+    label: "{{ dev_workstation_account.name }}"

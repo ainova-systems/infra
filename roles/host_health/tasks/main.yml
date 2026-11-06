@@ -1,0 +1,4 @@
+---
+# host_health changes nothing: apply and check are the same read-only probes.
+- name: Run host health check
+  ansible.builtin.include_tasks: check.yml

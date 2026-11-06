@@ -1,0 +1,94 @@
+---
+# Shared by main.yml and check.yml: refuse unsupported hosts and malformed input before anything runs.
+
+- name: Assert a supported operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] == '24.04'
+      - ansible_facts['architecture'] == 'x86_64'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: dev_workstation supports Ubuntu 24.04 on x86_64 with systemd only.
+    quiet: true
+
+- name: Assert pinned versions are exact
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_dotnet_sdks | length > 0
+      - dev_workstation_dotnet_sdks | map(attribute='version') | reject('match', '^[0-9]+\.[0-9]+\.[0-9]+$') | list | length == 0
+      - dev_workstation_dotnet_sdks | map(attribute='sha512') | reject('match', '^[0-9a-f]{128}$') | list | length == 0
+      - dev_workstation_dotnet_tools | map(attribute='version') | reject('match', '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$') | list | length == 0
+      - dev_workstation_dotnet_tools | map(attribute='name') | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]*$') | list | length == 0
+      - dev_workstation_node_package_version is match('^' ~ dev_workstation_node_major ~ '\.[0-9]+\.[0-9]+-')
+      - dev_workstation_corepack_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - dev_workstation_pnpm_fallback_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - dev_workstation_gh_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - dev_workstation_intelligence_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - dev_workstation_intelligence_update_version | string is match('^[0-9A-Za-z][0-9A-Za-z.+-]*$')
+      - dev_workstation_intelligence_package is match('^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$')
+      - dev_workstation_intelligence_update_on_calendar is match('^[0-9A-Za-z*,:./ -]+$')
+      - dev_workstation_intelligence_update_randomized_delay | string is match('^[0-9a-z ]+$')
+      - dev_workstation_node_key_fingerprints | reject('match', '^[0-9A-F]{40}$') | list | length == 0
+      - dev_workstation_gh_key_fingerprints | reject('match', '^[0-9A-F]{40}$') | list | length == 0
+    fail_msg: A pinned version, digest or fingerprint is missing or not exact; .NET SDKs must be in ascending order.
+    quiet: true
+
+- name: Assert .NET SDKs are listed in ascending version order
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_dotnet_sdks[dev_workstation_index].version is version(dev_workstation_dotnet_sdks[dev_workstation_index + 1].version, '<')
+    fail_msg: List .NET SDKs in ascending order; the last one extracted owns the shared dotnet host.
+    quiet: true
+  loop: "{{ range(dev_workstation_dotnet_sdks | length - 1) | list }}"
+  loop_control:
+    loop_var: dev_workstation_index
+
+- name: Assert the account list is well formed
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_accounts | type_debug == 'list'
+      - dev_workstation_accounts | length > 0
+      - dev_workstation_accounts | map(attribute='name') | unique | list | length == dev_workstation_accounts | length
+    fail_msg: dev_workstation_accounts must list at least one account, each name once.
+    quiet: true
+
+- name: Assert every account entry
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_account | type_debug == 'dict'
+      - dev_workstation_account.keys() | difference(['name', 'git_name', 'git_email', 'credential_scopes']) | length == 0
+      - dev_workstation_account.name is defined and dev_workstation_account.name is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - dev_workstation_account.name != 'root'
+      - dev_workstation_account.git_name is defined and dev_workstation_account.git_name | trim | length > 0
+      - dev_workstation_account.git_name is not search('[\x00-\x1f\x7f]')
+      - dev_workstation_account.git_email is defined and dev_workstation_account.git_email is match('^[^\s@]+@[^\s@]+\.[^\s@]+$')
+    fail_msg: >-
+      Account entries accept only name, git_name, git_email and credential_scopes; credentials are not
+      allowed here. Offending entry: {{ dev_workstation_account.name | default('(unnamed)') }}
+    quiet: true
+  loop: "{{ dev_workstation_accounts }}"
+  loop_control:
+    loop_var: dev_workstation_account
+    label: "{{ dev_workstation_account.name | default('(unnamed)') }}"
+
+- name: Assert every credential scope
+  vars:
+    dev_workstation_scopes: "{{ dev_workstation_account.credential_scopes | default(dev_workstation_default_credential_scopes) }}"
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_scopes | type_debug == 'list'
+      - dev_workstation_scopes | length > 0
+      - dev_workstation_scopes | select('mapping') | list | length == dev_workstation_scopes | length
+      - dev_workstation_scopes | map('list') | flatten | unique | difference(['name', 'url']) | length == 0
+      - dev_workstation_scopes | map(attribute='name') | reject('match', '^[a-z0-9][a-z0-9-]{0,31}$') | list | length == 0
+      - dev_workstation_scopes | map(attribute='url') | reject('match', '^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~-]+)*$') | list | length == 0
+      - dev_workstation_scopes | map(attribute='name') | unique | list | length == dev_workstation_scopes | length
+      - dev_workstation_scopes | map(attribute='url') | unique | list | length == dev_workstation_scopes | length
+    fail_msg: >-
+      Credential scopes for {{ dev_workstation_account.name }} must be unique {name, url} pairs: name in
+      lowercase kebab-case, url an https prefix without user info, query or trailing slash.
+    quiet: true
+  loop: "{{ dev_workstation_accounts }}"
+  loop_control:
+    loop_var: dev_workstation_account
+    label: "{{ dev_workstation_account.name }}"

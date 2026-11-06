@@ -1,0 +1,7 @@
+#!/bin/sh
+# Managed by the agent_workstation role; local edits are overwritten.
+# Pinned {{ item.tool }}; self-updates are disabled so the role's pin stays the running version.
+{% for key, value in agent_workstation_wrapper_env | dictsort %}
+export {{ key }}={{ value | quote }}
+{% endfor %}
+exec {{ item.executable | quote }} "$@"

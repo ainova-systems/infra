@@ -1,0 +1,56 @@
+---
+# One signed apt source: download the key to staging, accept it only when its primary-key fingerprints
+# equal the pinned set, then install key, source and an origin pin. Loop var: dev_workstation_source.
+
+- name: Download the signing key to staging - {{ dev_workstation_source.name }}
+  ansible.builtin.get_url:
+    url: "{{ dev_workstation_source.key_url }}"
+    dest: "{{ dev_workstation_state_dir }}/{{ dev_workstation_source.name }}.key"
+    owner: root
+    group: root
+    mode: "0644"
+    force: true
+
+- name: Read the staged key's primary fingerprints - {{ dev_workstation_source.name }}
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      gpg --batch --no-default-keyring --show-keys --with-colons "$KEY"
+      | awk -F: '$1=="pub"{want=1;next} $1=="fpr" && want {print $10;want=0}' | sort
+    executable: /bin/bash
+  environment:
+    KEY: "{{ dev_workstation_state_dir }}/{{ dev_workstation_source.name }}.key"
+  register: dev_workstation_key_listing
+  changed_when: false
+  check_mode: false
+
+- name: Assert the staged key is the pinned key - {{ dev_workstation_source.name }}
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_key_listing.stdout_lines == dev_workstation_source.fingerprints | sort
+    fail_msg: "{{ dev_workstation_source.name }} signing key fingerprints differ from the pin; nothing was trusted."
+    quiet: true
+
+- name: Install the verified key - {{ dev_workstation_source.name }}
+  ansible.builtin.copy:
+    src: "{{ dev_workstation_state_dir }}/{{ dev_workstation_source.name }}.key"
+    dest: "{{ dev_workstation_source.key_file }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the source and its origin pin - {{ dev_workstation_source.name }}
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - dest: "/etc/apt/sources.list.d/{{ dev_workstation_source.name }}.list"
+      content: "{{ dev_workstation_source.source }}\n"
+    - dest: "/etc/apt/preferences.d/{{ dev_workstation_source.name }}"
+      content: "Package: {{ dev_workstation_source.pin_package }}\nPin: origin {{ dev_workstation_source.pin_origin }}\nPin-Priority: 1001\n"
+  loop_control:
+    label: "{{ item.dest }}"

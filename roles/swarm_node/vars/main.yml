@@ -1,0 +1,20 @@
+---
+# Internal, lazily evaluated values. Not inputs: set the documented variables in defaults/main.yml instead.
+
+swarm_node__info: "{{ swarm_node__docker_info.stdout | from_json }}"
+swarm_node__state: "{{ swarm_node__info.Swarm.LocalNodeState | default('unknown') }}"
+swarm_node__is_manager: "{{ swarm_node_role == 'manager' }}"
+
+# Cluster ports every node needs from its peers; managers also serve the management port.
+swarm_node__common_ports:
+  - {port: 7946, proto: tcp}
+  - {port: 7946, proto: udp}
+  - {port: 4789, proto: udp}
+swarm_node__manager_ports:
+  - {port: "{{ swarm_node_listen_port }}", proto: tcp}
+swarm_node__ports: "{{ swarm_node__common_ports + (swarm_node__manager_ports if swarm_node__is_manager else []) }}"
+swarm_node__port_numbers: "{{ (swarm_node__common_ports + swarm_node__manager_ports) | map(attribute='port') | map('string') | unique }}"
+
+# Join token: from the controller environment at run time, or from this run's hidden prompt. Never stored.
+swarm_node__join_token: >-
+  {{ lookup('ansible.builtin.env', swarm_node_join_token_env) or (swarm_node__prompted_join_token | default('')) }}

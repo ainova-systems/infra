@@ -1,0 +1,72 @@
+---
+# Read-only check: swarm membership as declared; cluster ports open to listed peers and nobody else.
+
+- name: Validate the host and inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Check swarm membership
+  ansible.builtin.include_tasks: membership.yml
+
+- name: Read the firewall state
+  ansible.builtin.command:
+    argv: [ufw, status]
+  register: swarm_node__ufw_status
+  changed_when: false
+  check_mode: false
+
+- name: Read the added firewall rules
+  ansible.builtin.command:
+    argv: [ufw, show, added]
+  register: swarm_node__ufw_added
+  changed_when: false
+  check_mode: false
+
+# Any rule naming a cluster port must come from a listed peer; a worker has no management-port rule at all.
+- name: Assert no cluster port is open beyond the listed peers
+  ansible.builtin.assert:
+    that:
+      - swarm_node__ufw_status.stdout is search('^Status: active', multiline=true)
+      - >-
+        swarm_node__cluster_lines
+        | reject('search', '^ufw allow from (' ~ (swarm_node_peers | map('regex_escape') | join('|') | default('(?!)', true)) ~ ') ')
+        | list | length == 0
+      - >-
+        swarm_node__is_manager
+        or swarm_node__ufw_added.stdout_lines | select('search', '(^|[^0-9])' ~ swarm_node_listen_port ~ '([^0-9]|$)') | list | length == 0
+    fail_msg: >-
+      The firewall is inactive, or a rule opens a cluster port ({{ swarm_node__port_numbers | join(', ') }}) to a source
+      outside swarm_node_peers or the management port on a worker: {{ swarm_node__cluster_lines | join(' | ') }}
+    quiet: true
+  vars:
+    swarm_node__cluster_lines: >-
+      {{ swarm_node__ufw_added.stdout_lines
+         | select('search', '(^|[^0-9])(' ~ (swarm_node__port_numbers | join('|')) ~ ')([^0-9]|$)') | list }}
+
+- name: Assert every peer reaches every cluster port
+  ansible.builtin.assert:
+    that:
+      - >-
+        swarm_node__ufw_added.stdout_lines
+        | select('search', '^ufw allow from ' ~ (swarm_node__rule[0] | regex_escape)
+                 ~ ' to any port ' ~ swarm_node__rule[1].port ~ ' proto ' ~ swarm_node__rule[1].proto ~ '( |$)')
+        | list | length > 0
+    fail_msg: "No rule allows {{ swarm_node__rule[0] }} to {{ swarm_node__rule[1].port }}/{{ swarm_node__rule[1].proto }}."
+    quiet: true
+  loop: "{{ swarm_node_peers | product(swarm_node__ports) | list }}"
+  loop_control:
+    loop_var: swarm_node__rule
+    label: "{{ swarm_node__rule[0] }} {{ swarm_node__rule[1].port }}/{{ swarm_node__rule[1].proto }}"
+  when: swarm_node_firewall
+
+- name: Assert every peer may send encrypted overlay traffic
+  ansible.builtin.assert:
+    that:
+      - >-
+        swarm_node__ufw_added.stdout_lines | select('search', 'from ' ~ (swarm_node__peer | regex_escape) ~ '( |$)')
+        | select('search', '(^|[^a-z])esp([^a-z]|$)') | list | length > 0
+    fail_msg: "No rule allows ESP from {{ swarm_node__peer }} (swarm_node_overlay_encryption is true)."
+    quiet: true
+  loop: "{{ swarm_node_peers if swarm_node_overlay_encryption else [] }}"
+  loop_control:
+    loop_var: swarm_node__peer
+  when: swarm_node_firewall

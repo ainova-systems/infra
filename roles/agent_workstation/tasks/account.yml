@@ -1,0 +1,180 @@
+---
+# Per-account setup. Every write into the account's home runs as that account.
+
+- name: Resolve account {{ agent_workstation__account.name }}
+  ansible.builtin.set_fact:
+    agent_workstation__home: "{{ ansible_facts.getent_passwd[agent_workstation__account.name][4] }}"
+    agent_workstation__uid: "{{ ansible_facts.getent_passwd[agent_workstation__account.name][1] }}"
+
+- name: Read home of {{ agent_workstation__account.name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__home }}"
+    get_checksum: false
+  register: agent_workstation__home_stat
+  failed_when: >-
+    not agent_workstation__home_stat.stat.exists
+    or agent_workstation__home_stat.stat.islnk
+    or not agent_workstation__home_stat.stat.isdir
+    or agent_workstation__home_stat.stat.pw_name != agent_workstation__account.name
+
+- name: Read private directories of {{ agent_workstation__account.name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__home }}/{{ item }}"
+    get_checksum: false
+  register: agent_workstation__dirs
+  loop: "{{ agent_workstation_private_dirs }}"
+
+- name: Assert private directories are safe for {{ agent_workstation__account.name }}
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (not item.stat.islnk and item.stat.isdir and item.stat.pw_name == agent_workstation__account.name)
+    fail_msg: "unsafe workstation directory (link, type or owner): {{ item.item }}"
+    quiet: true
+  loop: "{{ agent_workstation__dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create private directories for {{ agent_workstation__account.name }}
+  ansible.builtin.file:
+    path: "{{ agent_workstation__home }}/{{ item }}"
+    state: directory
+    mode: "0700"
+  loop: "{{ agent_workstation_private_dirs }}"
+  become: true
+  become_user: "{{ agent_workstation__account.name }}"
+
+- name: Read account command paths of {{ agent_workstation__account.name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__home }}/.local/bin/{{ item.command }}"
+    get_checksum: false
+  register: agent_workstation__account_links
+  loop: "{{ agent_workstation__commands | selectattr('link', 'equalto', 'account') | list }}"
+  loop_control:
+    label: "{{ item.command }}"
+
+- name: Assert account command paths are managed links for {{ agent_workstation__account.name }}
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or item.stat.islnk
+    fail_msg: "unmanaged file at ~/.local/bin/{{ item.item.command }}"
+    quiet: true
+  loop: "{{ agent_workstation__account_links.results }}"
+  loop_control:
+    label: "{{ item.item.command }}"
+
+- name: Link account commands for {{ agent_workstation__account.name }}
+  ansible.builtin.file:
+    src: "{{ item.target }}"
+    dest: "{{ agent_workstation__home }}/.local/bin/{{ item.command }}"
+    state: link
+    force: true
+  loop: "{{ agent_workstation__commands | selectattr('link', 'equalto', 'account') | list }}"
+  loop_control:
+    label: "{{ item.command }}"
+  become: true
+  become_user: "{{ agent_workstation__account.name }}"
+
+- name: Seed Fresh defaults for {{ agent_workstation__account.name }}
+  when:
+    - "'fresh' in agent_workstation_enabled_tools"
+    - agent_workstation_fresh_defaults | length > 0
+  block:
+    - name: Read Fresh configuration of {{ agent_workstation__account.name }}
+      ansible.builtin.stat:
+        path: "{{ agent_workstation__home }}/.config/fresh/config.json"
+        get_checksum: false
+      register: agent_workstation__fresh
+      failed_when: >-
+        agent_workstation__fresh.stat.exists
+        and (agent_workstation__fresh.stat.islnk or not agent_workstation__fresh.stat.isreg)
+
+    - name: Read existing Fresh preferences of {{ agent_workstation__account.name }}
+      ansible.builtin.slurp:
+        src: "{{ agent_workstation__home }}/.config/fresh/config.json"
+      register: agent_workstation__fresh_content
+      when: agent_workstation__fresh.stat.exists
+
+    - name: Merge Fresh defaults under existing preferences of {{ agent_workstation__account.name }}
+      ansible.builtin.set_fact:
+        agent_workstation__fresh_existing: >-
+          {{ (agent_workstation__fresh_content.content | b64decode | from_json)
+             if agent_workstation__fresh.stat.exists else {} }}
+
+    - name: Assert Fresh configuration is an object for {{ agent_workstation__account.name }}
+      ansible.builtin.assert:
+        that:
+          - agent_workstation__fresh_existing is mapping
+        fail_msg: Fresh configuration must be a JSON object; inspect it by hand
+        quiet: true
+
+    - name: Write merged Fresh preferences for {{ agent_workstation__account.name }}
+      ansible.builtin.copy:
+        content: "{{ agent_workstation_fresh_defaults | combine(agent_workstation__fresh_existing) | to_nice_json(indent=2) }}\n"
+        dest: "{{ agent_workstation__home }}/.config/fresh/config.json"
+        mode: "0600"
+      when: >-
+        not agent_workstation__fresh.stat.exists
+        or agent_workstation_fresh_defaults | combine(agent_workstation__fresh_existing) != agent_workstation__fresh_existing
+      become: true
+      become_user: "{{ agent_workstation__account.name }}"
+
+- name: Configure Herdr for {{ agent_workstation__account.name }}
+  when: "'herdr' in agent_workstation_enabled_tools"
+  become: true
+  become_user: "{{ agent_workstation__account.name }}"
+  block:
+    - name: Write initial Herdr configuration for {{ agent_workstation__account.name }}
+      ansible.builtin.copy:
+        content: "{{ agent_workstation_herdr_config }}"
+        dest: "{{ agent_workstation__home }}/.config/herdr/config.toml"
+        mode: "0600"
+        force: false
+
+    - name: Read Herdr integrations of {{ agent_workstation__account.name }}
+      ansible.builtin.command:
+        argv: ["{{ agent_workstation__home }}/.local/bin/herdr", integration, status]
+      register: agent_workstation__herdr_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Install missing Herdr integrations for {{ agent_workstation__account.name }}
+      ansible.builtin.command:
+        argv: ["{{ agent_workstation__home }}/.local/bin/herdr", integration, install, "{{ item }}"]
+      changed_when: true
+      loop: "{{ agent_workstation_herdr_integrations }}"
+      when: >-
+        agent_workstation__herdr_status.stdout_lines | default([])
+        | select('match', '^' ~ item ~ ': current \(v[0-9]+\)') | list | length == 0
+
+- name: Run Herdr console service for {{ agent_workstation__account.name }}
+  when:
+    - "'herdr' in agent_workstation_enabled_tools"
+    - agent_workstation_herdr_service
+  block:
+    - name: Keep the user manager running without a login for {{ agent_workstation__account.name }}
+      ansible.builtin.command:
+        argv: [loginctl, enable-linger, "{{ agent_workstation__account.name }}"]
+        creates: /var/lib/systemd/linger/{{ agent_workstation__account.name }}
+
+    - name: Write Herdr user unit for {{ agent_workstation__account.name }}
+      ansible.builtin.template:
+        src: herdr.service.j2
+        dest: "{{ agent_workstation__home }}/.config/systemd/user/herdr.service"
+        mode: "0600"
+      become: true
+      become_user: "{{ agent_workstation__account.name }}"
+
+    # enabled + started never restarts a running console, so live agent sessions survive.
+    - name: Enable Herdr console for {{ agent_workstation__account.name }}
+      ansible.builtin.systemd_service:
+        name: herdr.service
+        scope: user
+        daemon_reload: true
+        enabled: true
+        state: started
+      environment:
+        XDG_RUNTIME_DIR: /run/user/{{ agent_workstation__uid }}
+      become: true
+      become_user: "{{ agent_workstation__account.name }}"
+      when: not ansible_check_mode

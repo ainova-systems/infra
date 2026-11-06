@@ -1,0 +1,251 @@
+#!/usr/bin/python3
+# Managed by the agent_workstation role; local edits are overwritten.
+"""agent-auth: store a forge token for one credential scope of the current coding account.
+
+The token is typed at a hidden prompt, validated, and written to
+~/.config/git-credentials/<scope>.env (mode 0600) as GH_TOKEN=<token>; the Git credential helper
+for that scope reads it from there. Tokens are never accepted as arguments, never echoed and
+never logged. Run inside the coding account, never as root.
+"""
+import getpass
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import stat
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CONFIG = Path({{ (agent_workstation_config_dir ~ '/credential-scopes.json') | to_json }})
+STORE = '.config/git-credentials'
+KEY = 'GH_TOKEN'
+VERBS = ('check', 'list', 'remove', 'help')
+USAGE = """Usage:
+  agent-auth [SCOPE]          prompt for a token (hidden), validate it, store it for SCOPE
+  agent-auth check [SCOPE]    check stored credentials (all scopes when SCOPE is omitted)
+  agent-auth list             list configured scopes and whether a credential is stored
+  agent-auth remove SCOPE     delete the stored credential of SCOPE
+SCOPE defaults to "default" when configured, or to the only configured scope."""
+
+
+class Failure(Exception):
+    pass
+
+
+def scopes():
+    if os.getuid() == 0:
+        raise Failure('Run inside the coding account, not as root.')
+    account = pwd.getpwuid(os.getuid())
+    if Path.home() != Path(account.pw_dir):
+        raise Failure('HOME does not match the current account.')
+    try:
+        configured = json.loads(CONFIG.read_text())[account.pw_name]
+    except (OSError, ValueError, KeyError):
+        raise Failure('No credential scopes are configured for this account.') from None
+    result = {}
+    for entry in configured:
+        name, url = entry.get('name'), entry.get('url')
+        if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]*', name) or name in VERBS:
+            raise Failure('Invalid scope configuration.')
+        if not isinstance(url, str) or not url.startswith('https://'):
+            raise Failure('Invalid scope configuration.')
+        result[name] = entry
+    if not result:
+        raise Failure('No credential scopes are configured for this account.')
+    return result
+
+
+def select(configured, name):
+    if name is None:
+        if 'default' in configured:
+            return 'default'
+        if len(configured) == 1:
+            return next(iter(configured))
+        raise Failure('Name a scope: ' + ', '.join(sorted(configured)))
+    if name not in configured:
+        raise Failure('Unknown scope. Configured: ' + ', '.join(sorted(configured)))
+    return name
+
+
+def safe_path(path, *, secret=False):
+    """Reject links, foreign owners and shared files from HOME down to the managed path."""
+    home = Path.home()
+    relative = path.relative_to(home)
+    parents = [home]
+    for component in relative.parts[:-1]:
+        parents.append(parents[-1] / component)
+    for part in parents:
+        if part.is_symlink() or (part.exists() and (not part.is_dir() or part.stat().st_uid != os.getuid())):
+            raise Failure('Unsafe account directory.')
+    if path.is_symlink():
+        raise Failure('Refusing a symlink at a credential file.')
+    if path.exists():
+        s = path.stat()
+        if not stat.S_ISREG(s.st_mode) or s.st_uid != os.getuid() or s.st_nlink != 1:
+            raise Failure('Unsafe credential file.')
+        if secret and stat.S_IMODE(s.st_mode) != 0o600:
+            raise Failure('Credential file must have mode 0600.')
+
+
+def credential_path(scope):
+    return Path.home() / STORE / (scope + '.env')
+
+
+def read_token(scope):
+    path = credential_path(scope)
+    safe_path(path, secret=True)
+    if not path.exists():
+        return None
+    values = {}
+    for line in path.read_text().splitlines():
+        if not line or line.startswith('#'):
+            continue
+        key, sep, value = line.partition('=')
+        if not sep or key != KEY or key in values or not value:
+            raise Failure('Invalid credential file; remove it and store the token again.')
+        values[key] = value
+    return values.get(KEY)
+
+
+def write_token(scope, token):
+    path = credential_path(scope)
+    safe_path(path, secret=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    descriptor, temporary = tempfile.mkstemp(prefix='.auth-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write(KEY + '=' + token + '\n')
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise Failure('Validation endpoint redirected; the token was not forwarded.')
+
+
+def validation_url(entry):
+    if entry.get('validate_url'):
+        return entry['validate_url']
+    if urllib.parse.urlsplit(entry['url']).hostname == 'github.com':
+        return 'https://api.github.com/user'
+    return None
+
+
+def validate(entry, token):
+    """True when accepted, None when the scope has no validation endpoint."""
+    url = validation_url(entry)
+    if url is None:
+        return None
+    if not url.startswith('https://'):
+        raise Failure('Validation endpoint must use HTTPS.')
+    request = urllib.request.Request(url, headers={
+        'Authorization': 'Bearer ' + token,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'agent-auth'})
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=20):
+            return True
+    except urllib.error.HTTPError as error:
+        # Never print response bodies: a provider can echo request details.
+        raise Failure(f'Token rejected: HTTP {error.code}; check account, expiry and permissions.') from None
+    except urllib.error.URLError:
+        raise Failure('Validation endpoint is unreachable; the stored credential was not changed.') from None
+
+
+def login(configured, name):
+    scope = select(configured, name)
+    if not sys.stdin.isatty():
+        raise Failure('A token is typed at an interactive terminal; it is never piped or passed as an argument.')
+    entry = configured[scope]
+    safe_path(credential_path(scope), secret=True)
+    print(f'Scope {scope}: {entry["url"]}')
+    token = getpass.getpass('Token (hidden): ')
+    if not token or len(token) > 4096 or not re.fullmatch(r'[!-~]+', token):
+        raise Failure('Invalid token input.')
+    accepted = validate(entry, token)
+    write_token(scope, token)
+    if accepted:
+        print(f'PASS {scope}: token accepted and stored with mode 0600.')
+    else:
+        print(f'STORED {scope}: no validation endpoint for this scope; Git use will confirm it.')
+
+
+def check(configured, name):
+    failed = False
+    for scope in [select(configured, name)] if name else sorted(configured):
+        try:
+            token = read_token(scope)
+            if token is None:
+                print(f'AUTH_REQUIRED {scope}: run agent-auth {scope} inside this account.')
+                continue
+            accepted = validate(configured[scope], token)
+            print(f'PASS {scope}: token accepted.' if accepted else f'PRESENT {scope}: stored; no validation endpoint.')
+        except Failure as error:
+            failed = True
+            print(f'FAIL {scope}: {error}', file=sys.stderr)
+    if failed:
+        sys.exit(1)
+
+
+def listing(configured):
+    for scope in sorted(configured):
+        path = credential_path(scope)
+        safe_path(path, secret=True)
+        print(f'{scope}\t{configured[scope]["url"]}\t{"stored" if path.exists() else "missing"}')
+
+
+def remove(configured, name):
+    if name is None:
+        raise Failure('Name the scope to remove.')
+    scope = select(configured, name)
+    path = credential_path(scope)
+    safe_path(path, secret=True)
+    if path.exists():
+        path.unlink()
+        print(f'REMOVED {scope}: revoke the token at the forge as well.')
+    else:
+        print(f'ABSENT {scope}: nothing stored.')
+
+
+def main(argv):
+    os.umask(0o077)
+    if argv and argv[0] in ('help', '-h', '--help'):
+        print(USAGE)
+        return
+    if len(argv) > 2 or (len(argv) == 2 and argv[0] not in VERBS):
+        raise Failure('Tokens and extra arguments are not accepted.\n' + USAGE)
+    configured = scopes()
+    verb = argv[0] if argv and argv[0] in VERBS else None
+    if verb:
+        name = argv[1] if len(argv) == 2 else None
+    else:
+        name = argv[0] if argv else None
+    if verb == 'check':
+        check(configured, name)
+    elif verb == 'list':
+        if name:
+            raise Failure(USAGE)
+        listing(configured)
+    elif verb == 'remove':
+        remove(configured, name)
+    else:
+        login(configured, name)
+
+
+if __name__ == '__main__':
+    try:
+        main(sys.argv[1:])
+    except KeyboardInterrupt:
+        print('\nCancelled; nothing stored.', file=sys.stderr)
+        sys.exit(130)
+    except (Failure, OSError, ValueError) as error:
+        print('FAIL ' + (str(error) if isinstance(error, Failure) else type(error).__name__), file=sys.stderr)
+        sys.exit(1)

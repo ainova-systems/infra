@@ -1,0 +1,104 @@
+---
+# One cleanup service and timer per daemon: root for the system daemon, one per rootless account.
+- name: Read rootless account IDs for cleanup units
+  ansible.builtin.command:
+    argv: [id, -u, "{{ item }}"]
+  loop: "{{ container_engine_rootless_accounts }}"
+  register: container_engine__cleanup_uids
+  changed_when: false
+  check_mode: false
+
+- name: Collect daemons to clean
+  ansible.builtin.set_fact:
+    container_engine__daemons: >-
+      {{ ([{'account': 'root', 'socket': 'unix://' ~ container_engine__rootful_socket}] if container_engine__rootful else [])
+         + (container_engine__cleanup_uids.results
+            | map(attribute='stdout')
+            | map('regex_replace', '^(.*)$', 'unix:///run/user/\1/docker.sock')
+            | map('community.general.dict_kv', 'socket')
+            | zip(container_engine_rootless_accounts | map('community.general.dict_kv', 'account'))
+            | map('combine') | list) }}
+
+- name: Install cleanup script
+  ansible.builtin.template:
+    src: cleanup.sh.j2
+    dest: "{{ container_engine__cleanup_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: container_engine__cleanup.enabled | bool
+
+- name: Install cleanup services
+  ansible.builtin.template:
+    src: cleanup.service.j2
+    dest: "/etc/systemd/system/container-engine-cleanup-{{ container_engine__daemon.account }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ container_engine__daemons }}"
+  loop_control:
+    loop_var: container_engine__daemon
+    label: "{{ container_engine__daemon.account }}"
+  when: container_engine__cleanup.enabled | bool
+  register: container_engine__cleanup_services
+
+- name: Install cleanup timers
+  ansible.builtin.template:
+    src: cleanup.timer.j2
+    dest: "/etc/systemd/system/container-engine-cleanup-{{ container_engine__daemon.account }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ container_engine__daemons }}"
+  loop_control:
+    loop_var: container_engine__daemon
+    label: "{{ container_engine__daemon.account }}"
+  when: container_engine__cleanup.enabled | bool
+  register: container_engine__cleanup_timers
+
+- name: Verify cleanup units
+  ansible.builtin.command:
+    argv:
+      - systemd-analyze
+      - verify
+      - "/etc/systemd/system/container-engine-cleanup-{{ container_engine__daemon.account }}.service"
+      - "/etc/systemd/system/container-engine-cleanup-{{ container_engine__daemon.account }}.timer"
+  loop: "{{ container_engine__daemons }}"
+  loop_control:
+    loop_var: container_engine__daemon
+    label: "{{ container_engine__daemon.account }}"
+  changed_when: false
+  check_mode: false
+  when: container_engine__cleanup.enabled | bool and not ansible_check_mode
+
+- name: Enable cleanup timers
+  ansible.builtin.systemd_service:
+    name: "container-engine-cleanup-{{ container_engine__daemon.account }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: "{{ container_engine__cleanup_services is changed or container_engine__cleanup_timers is changed }}"
+  loop: "{{ container_engine__daemons }}"
+  loop_control:
+    loop_var: container_engine__daemon
+    label: "{{ container_engine__daemon.account }}"
+  when: container_engine__cleanup.enabled | bool
+
+- name: Read existing cleanup timers
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/container-engine-cleanup-{{ container_engine__daemon.account }}.timer"
+  loop: "{{ container_engine__daemons }}"
+  loop_control:
+    loop_var: container_engine__daemon
+    label: "{{ container_engine__daemon.account }}"
+  register: container_engine__cleanup_existing
+  when: not container_engine__cleanup.enabled | bool
+
+- name: Disable cleanup timers
+  ansible.builtin.systemd_service:
+    name: "container-engine-cleanup-{{ item.container_engine__daemon.account }}.timer"
+    enabled: false
+    state: stopped
+  loop: "{{ container_engine__cleanup_existing.results | default([]) | selectattr('stat', 'defined') | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.container_engine__daemon.account }}"
+  when: not container_engine__cleanup.enabled | bool

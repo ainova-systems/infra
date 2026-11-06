@@ -1,0 +1,7 @@
+---
+# Syntax target only: never contacted. The name resolves nowhere (.invalid) and is not localhost.
+all:
+  hosts:
+    syntax-target:
+      ansible_host: syntax-target.invalid
+      ansible_connection: ssh

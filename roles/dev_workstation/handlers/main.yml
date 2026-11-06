@@ -1,0 +1,7 @@
+---
+- name: Restart Intelligence CLI update timer
+  ansible.builtin.systemd_service:
+    name: intelligence-cli-update.timer
+    state: restarted
+    daemon_reload: true
+  when: dev_workstation_intelligence_update_enabled | bool

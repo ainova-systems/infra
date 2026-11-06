@@ -1,0 +1,165 @@
+---
+# Read-only check. Fails on any failed control; reports credential-dependent state separately.
+# Project check plays include it with tasks_from: check.
+
+- name: Check supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version == '24.04'
+      - ansible_facts.architecture == 'x86_64'
+      - agent_workstation_accounts | length > 0
+    fail_msg: agent_workstation supports Ubuntu 24.04 on x86_64 with at least one account
+    quiet: true
+
+- name: Read pinned tool markers
+  ansible.builtin.command:
+    argv: [cat, "{{ item.dir }}/.sha256"]
+  register: agent_workstation__check_markers
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop: "{{ agent_workstation__tools }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Check pinned tools are installed at their digest
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == item.item.sha256
+    fail_msg: "{{ item.item.name }} {{ item.item.version }} is not installed at its pinned digest"
+    success_msg: "PASS {{ item.item.name }} {{ item.item.version }}"
+  loop: "{{ agent_workstation__check_markers.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Read installed tool executables
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    get_checksum: false
+  register: agent_workstation__check_exec
+  loop: "{{ agent_workstation__tools }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Check tool executables are root-owned regular files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists and item.stat.isreg and not item.stat.islnk and item.stat.executable
+      - item.stat.pw_name == 'root' and not item.stat.wgrp and not item.stat.woth
+    fail_msg: "{{ item.item.path }} is missing, a link, or writable by others"
+    quiet: true
+  loop: "{{ agent_workstation__check_exec.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Read wrappers
+  ansible.builtin.command:
+    argv: [cat, "{{ agent_workstation_wrapper_dir }}/{{ item.command }}"]
+  register: agent_workstation__check_wrappers
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop: "{{ agent_workstation__commands | selectattr('wrap') | list }}"
+  loop_control:
+    label: "{{ item.command }}"
+
+- name: Check wrappers match the pins
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == agent_workstation__expected | trim
+    fail_msg: "wrapper {{ item.item.command }} is missing or differs from the pin"
+    quiet: true
+  vars:
+    agent_workstation__expected: "{{ lookup('ansible.builtin.template', 'wrapper.sh.j2', template_vars={'item': item.item}) }}"
+  loop: "{{ agent_workstation__check_wrappers.results }}"
+  loop_control:
+    label: "{{ item.item.command }}"
+
+- name: Read system command links
+  ansible.builtin.stat:
+    path: /usr/local/bin/{{ item.command }}
+    get_checksum: false
+  register: agent_workstation__check_system_links
+  loop: "{{ agent_workstation__commands | selectattr('link', 'equalto', 'system') | list }}"
+  loop_control:
+    label: "{{ item.command }}"
+
+- name: Check system command links
+  ansible.builtin.assert:
+    that:
+      - item.stat.islnk | default(false)
+      - item.stat.lnk_target == item.item.target
+    fail_msg: "/usr/local/bin/{{ item.item.command }} does not point at {{ item.item.target }}"
+    quiet: true
+  loop: "{{ agent_workstation__check_system_links.results }}"
+  loop_control:
+    label: "{{ item.item.command }}"
+
+- name: Read managed agent-auth files
+  ansible.builtin.command:
+    argv: [cat, "{{ item.path }}"]
+  register: agent_workstation__check_auth
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop:
+    - {path: "{{ agent_workstation_auth_command }}", template: agent-auth.py.j2}
+    - {path: "{{ agent_workstation_config_dir }}/credential-scopes.json", template: credential-scopes.json.j2}
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Check agent-auth and its scopes match the desired state
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == agent_workstation__expected | trim
+    fail_msg: "{{ item.item.path }} is missing or differs from the desired state"
+    quiet: true
+  vars:
+    agent_workstation__expected: "{{ lookup('ansible.builtin.template', item.item.template) }}"
+  loop: "{{ agent_workstation__check_auth.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Read agent-auth mode
+  ansible.builtin.stat:
+    path: "{{ agent_workstation_auth_command }}"
+    get_checksum: false
+  register: agent_workstation__check_auth_stat
+  failed_when: >-
+    not agent_workstation__check_auth_stat.stat.exists
+    or agent_workstation__check_auth_stat.stat.pw_name != 'root'
+    or agent_workstation__check_auth_stat.stat.wgrp or agent_workstation__check_auth_stat.stat.woth
+    or not agent_workstation__check_auth_stat.stat.executable
+
+- name: Check shared browser
+  ansible.builtin.include_tasks: check-browser.yml
+  when: agent_workstation_browser
+
+- name: Read account database
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ item.name }}"]
+  register: agent_workstation__check_passwd
+  changed_when: false
+  failed_when: agent_workstation__check_passwd.rc != 0
+  check_mode: false
+  loop: "{{ agent_workstation_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Check coding accounts
+  ansible.builtin.include_tasks: check-account.yml
+  loop: "{{ agent_workstation__check_passwd.results }}"
+  loop_control:
+    loop_var: agent_workstation__check_entry
+    label: "{{ agent_workstation__check_entry.item.name }}"
+
+- name: Report credential-dependent state
+  ansible.builtin.debug:
+    msg: >-
+      {{ (agent_workstation__auth_required | default([])) | length }} credential scope(s) awaiting the
+      owner: {{ agent_workstation__auth_required | default([]) | join(', ') or 'none' }}.
+      Run agent-auth <scope> inside the named account. This is reported, not failed.

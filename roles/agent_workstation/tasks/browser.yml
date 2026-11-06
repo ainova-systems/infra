@@ -1,0 +1,245 @@
+---
+# Shared browser: root-owned, lockfile-pinned Playwright Core and a root-owned sandboxed Chrome.
+# Project Playwright versions stay project-owned; this is host readiness only.
+
+- name: Read Node runtime
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  register: agent_workstation__node
+  failed_when: not agent_workstation__node.stat.exists or not agent_workstation__node.stat.executable
+  loop:
+    - "{{ agent_workstation_node_executable }}"
+    - "{{ agent_workstation_npm_executable }}"
+
+- name: Install browser system libraries
+  ansible.builtin.apt:
+    name: "{{ agent_workstation_browser_packages }}"
+    state: present
+    install_recommends: false
+
+- name: Write browser system library list
+  ansible.builtin.copy:
+    content: "{{ agent_workstation_browser_packages | join('\n') }}\n"
+    dest: "{{ agent_workstation_share_dir }}/chromium-system-packages"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Read browser directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  register: agent_workstation__browser_dirs
+  loop:
+    - "{{ agent_workstation_root }}"
+    - "{{ agent_workstation__playwright_dir }}"
+    - "{{ agent_workstation__playwright_dir }}/node_modules"
+    - "{{ agent_workstation__playwright_dir }}/package.json"
+    - "{{ agent_workstation__playwright_dir }}/package-lock.json"
+    - "{{ agent_workstation_share_dir }}"
+
+- name: Assert browser directories are root-owned and not writable by others
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or not item.stat.islnk
+      - not item.stat.exists or (item.stat.pw_name == 'root' and not item.stat.wgrp and not item.stat.woth)
+    fail_msg: "unsafe browser path: {{ item.item }}"
+    quiet: true
+  loop: "{{ agent_workstation__browser_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create Playwright directory
+  ansible.builtin.file:
+    path: "{{ agent_workstation__playwright_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Find unsafe entries in an existing Playwright installation
+  ansible.builtin.command:
+    argv: [find, "{{ agent_workstation__playwright_dir }}", -xdev, "(", -not, -user, root, -o, "(", "!", -type, l, -perm, /022, ")", ")", -print, -quit]
+  register: agent_workstation__pw_unsafe
+  changed_when: false
+  check_mode: false
+  failed_when: agent_workstation__pw_unsafe.rc != 0 or agent_workstation__pw_unsafe.stdout | length > 0
+
+- name: Write Playwright package manifest and lockfile
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ agent_workstation__playwright_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {src: playwright-package.json.j2, dest: package.json}
+    - {src: playwright-package-lock.json.j2, dest: package-lock.json}
+
+- name: Read installed Playwright Core version
+  ansible.builtin.command:
+    argv:
+      - "{{ agent_workstation_node_executable }}"
+      - -p
+      - require('{{ agent_workstation__playwright_dir }}/node_modules/playwright-core/package.json').version
+  register: agent_workstation__pw_version
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install Playwright Core from the lockfile without lifecycle scripts
+  ansible.builtin.command:
+    argv:
+      - "{{ agent_workstation_npm_executable }}"
+      - ci
+      - --prefix
+      - "{{ agent_workstation__playwright_dir }}"
+      - --ignore-scripts
+      - --omit=dev
+      - --no-audit
+      - --no-fund
+  changed_when: true
+  when: agent_workstation__pw_version.stdout | trim != agent_workstation_playwright_version
+
+- name: Verify Playwright installation ownership and mode
+  ansible.builtin.command:
+    argv: [find, "{{ agent_workstation__playwright_dir }}", -xdev, "(", -not, -user, root, -o, "(", "!", -type, l, -perm, /022, ")", ")", -print, -quit]
+  register: agent_workstation__pw_unsafe_after
+  changed_when: false
+  check_mode: false
+  failed_when: agent_workstation__pw_unsafe_after.rc != 0 or agent_workstation__pw_unsafe_after.stdout | length > 0
+
+- name: Read Chrome executable
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__chrome }}"
+    get_checksum: false
+  register: agent_workstation__chrome_stat
+
+# An existing administrator-owned Chrome is kept. A fresh host gets the Chromium revision
+# bound to the pinned Playwright release.
+- name: Install pinned Chromium as Chrome
+  when: not agent_workstation__chrome_stat.stat.exists and not ansible_check_mode
+  block:
+    - name: Read Chrome parent directories
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: false
+      register: agent_workstation__chrome_parents
+      loop:
+        - "{{ agent_workstation_chrome_dir | dirname }}"
+        - "{{ agent_workstation_chrome_dir }}"
+
+    - name: Assert Chrome parent directories are safe
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists or (not item.stat.islnk and item.stat.isdir and item.stat.pw_name == 'root' and not item.stat.wgrp and not item.stat.woth)
+        fail_msg: "unsafe browser directory: {{ item.item }}"
+        quiet: true
+      loop: "{{ agent_workstation__chrome_parents.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Create Chrome directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - "{{ agent_workstation_chrome_dir | dirname }}"
+        - "{{ agent_workstation_chrome_dir }}"
+
+    - name: Download Chromium bound to Playwright Core
+      ansible.builtin.command:
+        argv:
+          - "{{ agent_workstation_node_executable }}"
+          - "{{ agent_workstation__playwright_dir }}/node_modules/playwright-core/cli.js"
+          - install
+          - chromium
+          - --no-shell
+      environment:
+        PLAYWRIGHT_BROWSERS_PATH: "{{ agent_workstation__playwright_dir }}/browsers"
+      changed_when: true
+
+    - name: Locate downloaded Chromium
+      ansible.builtin.command:
+        argv:
+          - "{{ agent_workstation_node_executable }}"
+          - -p
+          - require('{{ agent_workstation__playwright_dir }}/node_modules/playwright-core').chromium.executablePath()
+      environment:
+        PLAYWRIGHT_BROWSERS_PATH: "{{ agent_workstation__playwright_dir }}/browsers"
+      register: agent_workstation__chromium_path
+      changed_when: false
+
+    - name: Read downloaded Chromium
+      ansible.builtin.stat:
+        path: "{{ agent_workstation__chromium_path.stdout | trim }}"
+        get_checksum: false
+      register: agent_workstation__chromium
+      failed_when: not agent_workstation__chromium.stat.exists or agent_workstation__chromium.stat.islnk
+
+    - name: Copy Chromium into the Chrome directory
+      ansible.builtin.command:
+        argv: [cp, -a, "{{ agent_workstation__chromium_path.stdout | trim | dirname }}/.", "{{ agent_workstation_chrome_dir }}/"]
+        creates: "{{ agent_workstation__chrome }}"
+
+- name: Verify Chrome is root-owned without writable descendants
+  ansible.builtin.include_tasks: chrome-safety.yml
+  when: agent_workstation__chrome_stat.stat.exists or not ansible_check_mode
+
+- name: Read managed browser files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  register: agent_workstation__browser_files
+  loop:
+    - /usr/local/bin/agent-playwright
+    - "{{ agent_workstation_share_dir }}/playwright-smoke.cjs"
+    - "{{ agent_workstation_share_dir }}/playwright.md"
+
+- name: Assert managed browser files are not foreign
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (not item.stat.islnk and item.stat.isreg and item.stat.pw_name == 'root')
+    fail_msg: "unsafe managed browser file: {{ item.item }}"
+    quiet: true
+  loop: "{{ agent_workstation__browser_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Write agent-playwright launcher
+  ansible.builtin.template:
+    src: agent-playwright.sh.j2
+    dest: /usr/local/bin/agent-playwright
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write browser smoke test and guide
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ agent_workstation_share_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [playwright-smoke.cjs, playwright.md]
+
+- name: Read google-chrome launcher
+  ansible.builtin.stat:
+    path: /usr/local/bin/google-chrome
+    get_checksum: false
+  register: agent_workstation__chrome_link
+  failed_when: >-
+    (agent_workstation__chrome_link.stat.exists or agent_workstation__chrome_link.stat.islnk | default(false))
+    and (agent_workstation__chrome_link.stat.lnk_target | default('')) != agent_workstation__chrome
+
+- name: Link google-chrome launcher
+  ansible.builtin.file:
+    src: "{{ agent_workstation__chrome }}"
+    dest: /usr/local/bin/google-chrome
+    state: link
+    owner: root
+    group: root

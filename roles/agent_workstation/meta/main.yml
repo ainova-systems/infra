@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: agent_workstation
+  namespace: ainova
+  author: Ainova Systems
+  description: Pinned coding-agent CLIs, terminal tools, shared Playwright browser and a hidden-input credential helper for unprivileged coding accounts
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags: [workstation, development, agents, playwright]
+# Accounts, Node and Git credential helpers come from dev_workstation; apply it first.
+dependencies: []

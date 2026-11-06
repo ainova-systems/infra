@@ -1,0 +1,259 @@
+---
+- name: Validate inputs and platform
+  ansible.builtin.include_tasks: assert.yml
+
+- name: Read installed packages
+  ansible.builtin.package_facts:
+    manager: apt
+
+# Never moves an existing engine silently: a different installed version is a reviewed pin change.
+- name: Assert installed engine matches the pin
+  ansible.builtin.assert:
+    that:
+      - container_engine_allow_upgrade | bool or container_engine__drift == ''
+    fail_msg: >-
+      Installed engine packages differ from the pin ({{ container_engine__drift | regex_replace(', $', '') }}).
+      Review the change and set container_engine_allow_upgrade for that run; upgrading restarts every container.
+    quiet: true
+  vars:
+    container_engine__drift: >-
+      {%- for name, prefix in container_engine__packages.items() -%}
+      {%- if name in ansible_facts.packages and not ansible_facts.packages[name][0].version.startswith(prefix) -%}
+      {{ name }} {{ ansible_facts.packages[name][0].version }}, {% endif -%}
+      {%- endfor -%}
+
+- name: Read system daemon state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, docker.service]
+  register: container_engine__rootful_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Refuse to stop an active system daemon in rootless mode
+  ansible.builtin.assert:
+    that:
+      - container_engine__rootful_state.stdout | trim != 'active'
+    fail_msg: >-
+      container_engine_mode is rootless but the system Docker daemon is active. Stopping it ends its
+      workloads; migrate them and stop it deliberately first.
+    quiet: true
+  when: container_engine_mode == 'rootless'
+
+- name: Read rootless accounts
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ item }}"]
+  loop: "{{ container_engine_rootless_accounts }}"
+  register: container_engine__passwd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read sudo rights of rootless accounts
+  ansible.builtin.command:
+    argv: [sudo, -n, -l, -U, "{{ item }}"]
+  loop: "{{ container_engine_rootless_accounts }}"
+  register: container_engine__sudo
+  environment:
+    LC_ALL: C
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read subordinate ID ranges of rootless accounts
+  ansible.builtin.command:
+    argv: [awk, -F, ":", -v, "who={{ item[0] }}", "$1 == who && $3 >= 65536 { found = 1 } END { exit !found }", "{{ item[1] }}"]
+  loop: "{{ container_engine_rootless_accounts | product(['/etc/subuid', '/etc/subgid']) | list }}"
+  register: container_engine__subids
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert rootless accounts are unprivileged and ready
+  ansible.builtin.assert:
+    that:
+      - container_engine__passwd.results | rejectattr('rc', 'equalto', 0) | list | length == 0
+      - container_engine__sudo.results | map(attribute='stdout') | reject('search', 'is not allowed to run sudo') | list | length == 0
+      - container_engine__subids.results | rejectattr('rc', 'equalto', 0) | list | length == 0
+    fail_msg: >-
+      Every rootless account must exist (create it first), hold no sudo rights and own subordinate
+      UID and GID ranges of at least 65536.
+    quiet: true
+  when: container_engine_rootless_accounts | length > 0
+
+- name: Install engine prerequisites
+  ansible.builtin.apt:
+    name: >-
+      {{ ['ca-certificates', 'curl', 'gnupg', 'iptables']
+         + (['uidmap', 'dbus-user-session', 'slirp4netns', 'fuse-overlayfs'] if container_engine_rootless_accounts | length > 0 else []) }}
+    state: present
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Load nf_tables for rootless networking
+  community.general.modprobe:
+    name: nf_tables
+    state: present
+    persistent: present
+  when: container_engine_rootless_accounts | length > 0
+
+- name: Create apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download repository signing key candidate
+  ansible.builtin.get_url:
+    url: "{{ container_engine_apt_key_url }}"
+    dest: "{{ container_engine__key_candidate }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+- name: Read signing key fingerprint
+  ansible.builtin.command:
+    argv: [gpg, --batch, --show-keys, --with-colons, "{{ container_engine__key_candidate }}"]
+  register: container_engine__key
+  changed_when: false
+  check_mode: false
+
+- name: Assert signing key fingerprint
+  ansible.builtin.assert:
+    that:
+      - >-
+        container_engine__key.stdout_lines | select('match', '^fpr:') | map('split', ':')
+        | map(attribute=9) | first | default('') == container_engine_apt_key_fingerprint
+    fail_msg: >-
+      The downloaded signing key does not match container_engine_apt_key_fingerprint. Nothing was trusted;
+      investigate before removing {{ container_engine__key_candidate }}.
+    quiet: true
+
+- name: Install verified signing key
+  ansible.builtin.copy:
+    src: "{{ container_engine__key_candidate }}"
+    dest: "{{ container_engine__keyring }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure package source
+  ansible.builtin.copy:
+    dest: "{{ container_engine__source_file }}"
+    content: >
+      deb [arch={{ container_engine__arch }} signed-by={{ container_engine__keyring }}]
+      {{ container_engine_apt_repo_url }} {{ ansible_facts.distribution_release }} stable
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Refresh package lists
+
+- name: Refresh package lists before resolving versions
+  ansible.builtin.meta: flush_handlers
+
+- name: Read available engine versions
+  ansible.builtin.command:
+    argv: [apt-cache, madison, "{{ item.key }}"]
+  loop: "{{ container_engine__packages | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: container_engine__madison
+  changed_when: false
+  check_mode: false
+
+- name: Resolve pinned package versions
+  ansible.builtin.set_fact:
+    container_engine__resolved: >-
+      {%- set out = [] -%}
+      {%- for r in container_engine__madison.results -%}
+      {%- set found = r.stdout_lines | map('split', '|') | selectattr('1', 'defined') | map(attribute=1) | map('trim')
+                      | select('match', r.item.value | regex_escape) | list -%}
+      {%- set _ = out.append(r.item.key ~ '=' ~ (found | first | default('MISSING'))) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Assert every pinned version is available from the signed source
+  ansible.builtin.assert:
+    that:
+      - container_engine__resolved | select('search', '=MISSING$') | list | length == 0
+    fail_msg: "Pinned versions unavailable: {{ container_engine__resolved | select('search', '=MISSING$') | join(', ') }}"
+    quiet: true
+
+# A rootless host never starts the system daemon, not even from package post-install hooks.
+- name: Mask system daemon units in rootless mode
+  ansible.builtin.command:
+    argv: [systemctl, mask, docker.service, docker.socket, containerd.service]
+    creates: /etc/systemd/system/docker.service
+  when: container_engine_mode == 'rootless'
+
+- name: Install pinned engine packages
+  ansible.builtin.apt:
+    name: "{{ container_engine__resolved }}"
+    state: present
+    install_recommends: false
+    allow_downgrade: false
+    allow_change_held_packages: "{{ container_engine_allow_upgrade | bool }}"
+
+- name: Hold engine packages at the pin
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ container_engine__packages.keys() | list }}"
+
+- name: Configure system daemon
+  when: container_engine_mode == 'rootful'
+  block:
+    - name: Create system daemon configuration directory
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Configure system daemon log rotation
+      ansible.builtin.template:
+        src: daemon.json.j2
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart docker
+
+    - name: Unmask system daemon units
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        masked: false
+      loop: [containerd.service, docker.socket, docker.service]
+
+    - name: Enable system daemon
+      ansible.builtin.systemd_service:
+        name: docker.service
+        enabled: true
+        state: started
+
+- name: Install rootless account wrapper
+  ansible.builtin.template:
+    src: as-account.sh.j2
+    dest: "{{ container_engine__as_account }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: container_engine_rootless_accounts | length > 0
+
+- name: Configure rootless daemons
+  ansible.builtin.include_tasks: rootless_account.yml
+  loop: "{{ container_engine_rootless_accounts }}"
+  loop_control:
+    loop_var: container_engine__account
+
+- name: Flush engine handlers before cleanup units
+  ansible.builtin.meta: flush_handlers
+
+- name: Configure scheduled cleanup
+  ansible.builtin.include_tasks: cleanup.yml

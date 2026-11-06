@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: host_base
+  namespace: ainova
+  author: Ainova Systems
+  description: Named admin account, key-only SSH, default-deny firewall, unattended security updates and time sync.
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - security
+    - ssh
+    - firewall
+dependencies: []

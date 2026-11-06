@@ -1,0 +1,225 @@
+---
+# Read-only. Every probe runs in --check too and never reports a change; one assert at the end
+# lists every failed control and fails the host.
+- name: Gather minimal facts when the play did not
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - min
+  when: ansible_facts.distribution is not defined
+
+- name: Assert supported platform
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_health_supported_os
+        | selectattr('distribution', 'equalto', ansible_facts.distribution)
+        | selectattr('version', 'equalto', ansible_facts.distribution_version)
+        | list | length > 0
+    fail_msg: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} is not in host_health_supported_os"
+    quiet: true
+
+- name: Assert host_health inputs
+  ansible.builtin.assert:
+    that:
+      - host_health_min_free_disk_pct | int >= 0 and host_health_min_free_disk_pct | int <= 100
+      - host_health_min_free_mem_pct | int >= 0 and host_health_min_free_mem_pct | int <= 100
+      - host_health_disk_paths | length > 0
+      - host_health_container_engine_mode in ['rootful', 'rootless', 'none']
+      - host_health_backup is mapping
+      - >-
+        host_health_backup | length == 0
+        or (['bucket', 'max_age_hours', 'access_key_env', 'secret_key_env'] | difference(host_health_backup.keys()) | length == 0)
+      - host_health_backup | length == 0 or host_health_backup.access_key_env is match('^[A-Z][A-Z0-9_]*$')
+      - host_health_backup | length == 0 or host_health_backup.secret_key_env is match('^[A-Z][A-Z0-9_]*$')
+    fail_msg: >-
+      host_health needs percentages 0-100, at least one disk path, an engine mode rootful|rootless|none,
+      and host_health_backup either empty or {bucket, max_age_hours, access_key_env, secret_key_env, ...}
+      naming environment variables in upper case.
+    quiet: true
+
+- name: Note whether backup credentials are present in the control node environment
+  ansible.builtin.set_fact:
+    host_health__backup_credentials_present: >-
+      {{ lookup('ansible.builtin.env', host_health_backup.access_key_env) | length > 0
+         and lookup('ansible.builtin.env', host_health_backup.secret_key_env) | length > 0 }}
+  no_log: true
+  when: host_health_backup | length > 0
+
+- name: Assert backup credentials are present in the control node environment
+  ansible.builtin.assert:
+    that:
+      - host_health__backup_credentials_present | bool
+    fail_msg: >-
+      Set {{ host_health_backup.access_key_env }} and {{ host_health_backup.secret_key_env }} in the
+      environment of the run (read-only backup credentials).
+    quiet: true
+  when: host_health_backup | length > 0
+
+- name: Read uptime
+  ansible.builtin.command:
+    argv: [cat, /proc/uptime]
+  register: host_health__uptime
+  changed_when: false
+  check_mode: false
+
+- name: Read memory
+  ansible.builtin.command:
+    argv: [cat, /proc/meminfo]
+  register: host_health__meminfo
+  changed_when: false
+  check_mode: false
+
+- name: Read disk usage
+  ansible.builtin.command:
+    argv: [df, -P, --output=pcent, "{{ item }}"]
+  loop: "{{ host_health_disk_paths }}"
+  register: host_health__df
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read failed systemd units
+  ansible.builtin.command:
+    argv: [systemctl, list-units, --failed, --no-legend, --plain]
+  register: host_health__failed_units
+  changed_when: false
+  check_mode: false
+
+- name: Read reboot marker
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: host_health__reboot
+
+- name: Read system container daemon state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, docker.service]
+  register: host_health__docker
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: host_health_container_engine_mode == 'rootful'
+
+- name: Read rootless account IDs
+  ansible.builtin.command:
+    argv: [id, -u, "{{ item }}"]
+  loop: "{{ host_health_container_engine_rootless_accounts }}"
+  register: host_health__uids
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: host_health_container_engine_mode != 'none'
+
+- name: Probe rootless container daemons
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - "{{ item.item }}"
+      - --
+      - env
+      - "XDG_RUNTIME_DIR=/run/user/{{ item.stdout }}"
+      - "DOCKER_HOST=unix:///run/user/{{ item.stdout }}/docker.sock"
+      - docker
+      - version
+  loop: "{{ host_health__uids.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'equalto', 0) | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: host_health__rootless
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check backup freshness
+  when: host_health_backup | length > 0
+  delegate_to: localhost
+  become: false
+  block:
+    - name: List backup objects
+      amazon.aws.s3_object_info:
+        bucket_name: "{{ host_health_backup.bucket }}"
+        prefix: "{{ host_health_backup.prefix | default(omit) }}"
+        endpoint_url: "{{ host_health_backup.endpoint_url | default(omit) }}"
+        region: "{{ host_health_backup.region | default('us-east-1') }}"
+        access_key: "{{ lookup('ansible.builtin.env', host_health_backup.access_key_env) }}"
+        secret_key: "{{ lookup('ansible.builtin.env', host_health_backup.secret_key_env) }}"
+      register: host_health__backup_keys
+      no_log: true
+      failed_when: false
+
+    - name: Read newest backup objects
+      amazon.aws.s3_object_info:
+        bucket_name: "{{ host_health_backup.bucket }}"
+        object_name: "{{ item }}"
+        endpoint_url: "{{ host_health_backup.endpoint_url | default(omit) }}"
+        region: "{{ host_health_backup.region | default('us-east-1') }}"
+        access_key: "{{ lookup('ansible.builtin.env', host_health_backup.access_key_env) }}"
+        secret_key: "{{ lookup('ansible.builtin.env', host_health_backup.secret_key_env) }}"
+      loop: "{{ host_health__backup_keys.s3_keys | default([]) | reject('match', '.*/$') | sort | reverse | list }}"
+      loop_control:
+        extended: true
+      when: ansible_loop.index <= host_health_backup_inspect_keys | int
+      register: host_health__backup_objects
+      no_log: true
+      failed_when: false
+
+- name: Assert host_health controls
+  ansible.builtin.assert:
+    that:
+      - host_health__failures | length == 0
+    fail_msg: "host_health FAILED: {{ host_health__failures | join('; ') }}"
+    success_msg: >-
+      host_health OK: up {{ ((host_health__uptime_s | float) / 86400) | round(1) }} d, memory free {{ host_health__mem_free_pct }} %,
+      disk free {{ host_health__disk_free | join(', ') }}{{ ', newest backup ' ~ host_health__backup_age_h ~ ' h' if host_health_backup | length > 0 else '' }}
+  vars:
+    host_health__uptime_s: "{{ host_health__uptime.stdout.split()[0] | float }}"
+    host_health__mem_total: "{{ host_health__meminfo.stdout | regex_search('MemTotal:\\s+(\\d+)', '\\1') | first | int }}"
+    host_health__mem_avail: "{{ host_health__meminfo.stdout | regex_search('MemAvailable:\\s+(\\d+)', '\\1') | first | int }}"
+    host_health__mem_free_pct: "{{ ((host_health__mem_avail | int) * 100 / ([host_health__mem_total | int, 1] | max)) | round(1) }}"
+    host_health__disk_free: >-
+      {%- set out = [] -%}
+      {%- for r in host_health__df.results -%}
+      {%- set used = (r.stdout_lines | last | default('100%')) | regex_replace('[^0-9]', '') -%}
+      {%- set _ = out.append(r.item ~ ' ' ~ (100 - (used | int if r.rc == 0 else 100)) ~ ' %') -%}
+      {%- endfor -%}
+      {{ out }}
+    host_health__unexpected_units: >-
+      {{ host_health__failed_units.stdout_lines | map('split') | map('first') | reject('in', host_health_ignored_failed_units) | list }}
+    host_health__backup_age_h: >-
+      {%- set stamps = [] -%}
+      {%- for r in host_health__backup_objects.results | default([]) -%}
+      {%- set lm = r.object_info[0].object_data.last_modified | default('') if r.object_info is defined else '' -%}
+      {%- if lm -%}
+      {%- set _ = stamps.append((lm | string | regex_replace(' ', 'T') | regex_replace('\.\d+', '') | regex_replace('Z$', '+00:00')
+                                 | to_datetime('%Y-%m-%dT%H:%M:%S%z')).timestamp()) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ (((now().timestamp() - (stamps | max)) / 3600) | round(1)) if stamps | length > 0 else -1 }}
+    host_health__failures: >-
+      {{
+        ([] if (host_health__mem_free_pct | float) >= (host_health_min_free_mem_pct | float)
+           else ['memory available ' ~ host_health__mem_free_pct ~ ' % < ' ~ host_health_min_free_mem_pct ~ ' %'])
+        + (host_health__df.results | rejectattr('rc', 'equalto', 0) | map(attribute='item') | map('regex_replace', '^', 'cannot read disk usage of ') | list)
+        + host_health__disk_low
+        + ([] if host_health__unexpected_units | length == 0 else ['failed units: ' ~ host_health__unexpected_units | join(', ')])
+        + ([] if not (host_health_fail_on_reboot_required | bool and host_health__reboot.stat.exists) else ['reboot required'])
+        + ([] if host_health_container_engine_mode != 'rootful' or host_health__docker.stdout | trim == 'active' else ['system container daemon not active'])
+        + (host_health__uids.results | default([]) | selectattr('rc', 'defined') | rejectattr('rc', 'equalto', 0)
+           | map(attribute='item') | map('regex_replace', '^', 'rootless account missing: ') | list)
+        + (host_health__rootless.results | default([]) | rejectattr('rc', 'equalto', 0)
+           | map(attribute='item.item') | map('regex_replace', '^', 'rootless container daemon down: ') | list)
+        + ([] if host_health_backup | length == 0
+           else (['backup listing failed'] if host_health__backup_keys.failed | default(false) or host_health__backup_keys.s3_keys is not defined
+           else (['no backup object under the prefix'] if (host_health__backup_age_h | float) < 0
+           else ([] if (host_health__backup_age_h | float) <= (host_health_backup.max_age_hours | float)
+           else ['newest backup ' ~ host_health__backup_age_h ~ ' h old > ' ~ host_health_backup.max_age_hours ~ ' h']))))
+      }}
+    host_health__disk_low: >-
+      {%- set out = [] -%}
+      {%- for r in host_health__df.results if r.rc == 0 -%}
+      {%- set free = 100 - ((r.stdout_lines | last) | regex_replace('[^0-9]', '') | int) -%}
+      {%- if free < host_health_min_free_disk_pct | int -%}
+      {%- set _ = out.append('free disk ' ~ free ~ ' % < ' ~ host_health_min_free_disk_pct ~ ' % on ' ~ r.item) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}

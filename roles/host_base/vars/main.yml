@@ -1,0 +1,16 @@
+---
+# Derived values, not inputs: set host_base_* variables from defaults/main.yml instead.
+host_base__ssh_users: "{{ [host_base_admin_user] + host_base_ssh_extra_users }}"
+host_base__ssh_rules: >-
+  {{ host_base_ssh_allow_from
+     | map('community.general.dict_kv', 'from')
+     | map('combine', {'port': host_base_ssh_port, 'proto': 'tcp'})
+     | list }}
+host_base__allow_rules: "{{ host_base__ssh_rules + host_base_firewall_allow }}"
+host_base__key_pattern: >-
+  ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)
+  [A-Za-z0-9+/]+={0,3}( \S+)?$
+host_base__sudoers_file: /etc/sudoers.d/host-base-admin
+host_base__timesyncd_dropin: /etc/systemd/timesyncd.conf.d/host-base.conf
+# A firewall source: "any", an IPv4 address or CIDR, or an IPv6 address or CIDR. Empty never matches.
+host_base__source_pattern: '^(any|[0-9]{1,3}([.][0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9A-Fa-f]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?)$'

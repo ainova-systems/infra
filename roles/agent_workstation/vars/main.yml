@@ -1,0 +1,51 @@
+---
+# Derived values. Not inputs: override agent_workstation_* in defaults instead.
+
+# One entry per enabled tool: source settings plus the resolved url, install dir and executable.
+agent_workstation__tools: >-
+  {%- set out = [] -%}
+  {%- for name in agent_workstation_enabled_tools -%}
+  {%- set pin = agent_workstation_tools[name] -%}
+  {%- set src = agent_workstation_tool_sources[name] -%}
+  {%- set dir = agent_workstation_root ~ '/tools/' ~ name ~ '-' ~ pin.version -%}
+  {%- set _ = out.append(src | combine({
+        'name': name,
+        'version': pin.version,
+        'sha256': pin.sha256,
+        'check': pin.version_check | default(pin.version),
+        'url': src.url | replace('{version}', pin.version) | replace('{commit}', pin.commit | default('')),
+        'strip': src.strip | default(0),
+        'dir': dir,
+        'path': dir ~ '/' ~ src.executable})) -%}
+  {%- endfor -%}
+  {{ out }}
+
+# One entry per command: the name on PATH, what it resolves to and where it is linked.
+agent_workstation__commands: >-
+  {%- set out = [] -%}
+  {%- for tool in agent_workstation__tools -%}
+  {%- for command in tool.commands -%}
+  {%- set _ = out.append({
+        'command': command,
+        'tool': tool.name,
+        'check': tool.check,
+        'wrap': tool.wrap,
+        'link': tool.link,
+        'executable': tool.path,
+        'target': (agent_workstation_wrapper_dir ~ '/' ~ command) if tool.wrap else tool.path}) -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ out }}
+
+agent_workstation__playwright_dir: "{{ agent_workstation_root }}/playwright-{{ agent_workstation_playwright_version }}"
+agent_workstation__chrome: "{{ agent_workstation_chrome_dir }}/chrome"
+
+# Herdr integration runtime -> the tool that provides its CLI.
+agent_workstation__herdr_runtime_tools:
+  claude: claude_code
+  codex: codex
+  cursor: cursor_agent
+  opencode: opencode
+
+# agent-auth verbs; a scope may not use these names.
+agent_workstation__reserved_scopes: [check, list, remove, help, credential]

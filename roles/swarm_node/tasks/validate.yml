@@ -1,0 +1,67 @@
+---
+# Shared by main.yml and check.yml: refuse unsupported hosts and malformed input before anything runs.
+
+- name: Assert a supported operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] == '24.04'
+      - ansible_facts['architecture'] == 'x86_64'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: swarm_node supports Ubuntu 24.04 on x86_64 with systemd only.
+    quiet: true
+
+- name: Assert an explicit node role
+  ansible.builtin.assert:
+    that:
+      - swarm_node_role in ['manager', 'worker']
+      - swarm_node_init is boolean
+      - not swarm_node_init or swarm_node_role == 'manager'
+      - not swarm_node_init or swarm_node_join_addrs | length == 0
+    fail_msg: >-
+      Set swarm_node_role to manager or worker; the role never guesses. swarm_node_init: true creates a new swarm
+      and is valid only for a manager with no swarm_node_join_addrs.
+    quiet: true
+
+- name: Assert swarm_node inputs
+  ansible.builtin.assert:
+    that:
+      - swarm_node_advertise_addr is string
+      - swarm_node_advertise_addr is match('^([0-9]{1,3}([.][0-9]{1,3}){3}|[0-9A-Fa-f:]*:[0-9A-Fa-f:.]+|[a-z][a-z0-9._-]{0,14})$')
+      - swarm_node_advertise_addr not in ['0.0.0.0', '::', '127.0.0.1', '::1', 'lo']
+      - swarm_node_listen_port is integer and swarm_node_listen_port > 0 and swarm_node_listen_port < 65536
+      - swarm_node_join_addrs is sequence and swarm_node_join_addrs is not string
+      - swarm_node_join_addrs | select('match', '^[][A-Za-z0-9.:-]+$') | list | length == swarm_node_join_addrs | length
+      - swarm_node_peers is sequence and swarm_node_peers is not string
+      - swarm_node_peers | select('match', '^[0-9A-Fa-f.:]+(/[0-9]{1,3})?$') | list | length == swarm_node_peers | length
+      - swarm_node_peers | select('match', '^(0[.]0[.]0[.]0|::)(/0)?$') | list | length == 0
+      - swarm_node_peers | select('search', '/0$') | list | length == 0
+      - swarm_node_peers | unique | length == swarm_node_peers | length
+      - swarm_node_cluster_id is match('^([a-z0-9]{25})?$')
+      - swarm_node_firewall is boolean
+      - swarm_node_overlay_encryption is boolean
+      - swarm_node_allow_existing_workloads is boolean
+      - swarm_node_join_token_env is match('^[A-Z][A-Z0-9_]*$')
+    fail_msg: >-
+      Set swarm_node_advertise_addr (a routable IP or interface name), peers as single addresses or CIDRs (never
+      any or /0), and well-formed join addresses. Values come from the project's environment, not this repository.
+    quiet: true
+
+- name: Read the Docker daemon
+  ansible.builtin.command:
+    argv: [docker, info, --format, json]
+  register: swarm_node__docker_info
+  changed_when: false
+  check_mode: false
+
+- name: Assert a rootful daemon in a known swarm state
+  ansible.builtin.assert:
+    that:
+      - swarm_node__info.ServerVersion is defined
+      - swarm_node__info.SecurityOptions | default([]) | select('search', 'rootless') | list | length == 0
+      - swarm_node__state in ['inactive', 'active']
+    fail_msg: >-
+      swarm_node needs a running rootful Docker daemon (Swarm mode is not supported rootless). The local swarm state
+      is {{ swarm_node__state }}{{ (': ' ~ swarm_node__info.Swarm.Error) if (swarm_node__info.Swarm.Error | default('')) else '' }};
+      a pending, locked or error state is resolved by hand before this role runs.
+    quiet: true

@@ -1,0 +1,54 @@
+---
+# Internal, lazily evaluated values. Not inputs: set the documented variables in defaults/main.yml instead.
+
+# Instances that hold capacity on the host (every state except absent).
+github_actions_runner__active: >-
+  {{ (github_actions_runner_instances | rejectattr('state', 'defined') | list)
+     + (github_actions_runner_instances | selectattr('state', 'defined') | rejectattr('state', 'equalto', 'absent') | list) }}
+
+# Data volume of every instance, defaults applied.
+github_actions_runner__volumes: >-
+  {%- set ns = namespace(volumes=[]) -%}
+  {%- for runner in github_actions_runner_instances -%}
+  {%- set ns.volumes = ns.volumes + [runner.volume | default(runner.name ~ '-data')] -%}
+  {%- endfor -%}
+  {{ ns.volumes }}
+
+# Per-instance values; valid inside the instance loops (loop_var github_actions_runner_instance).
+github_actions_runner__name: "{{ github_actions_runner_instance.name }}"
+github_actions_runner__state: "{{ github_actions_runner_instance.state | default('present') }}"
+github_actions_runner__volume: "{{ github_actions_runner_instance.volume | default(github_actions_runner_instance.name ~ '-data') }}"
+github_actions_runner__adopt: "{{ github_actions_runner_instance.adopt | default(false) | bool }}"
+github_actions_runner__deregister: "{{ github_actions_runner_instance.deregister | default(true) | bool }}"
+github_actions_runner__purge: "{{ github_actions_runner_instance.purge | default(false) | bool }}"
+github_actions_runner__dir: "{{ github_actions_runner_base_dir }}/{{ github_actions_runner_instance.name }}"
+github_actions_runner__definition: "{{ github_actions_runner__dir }}/compose.yml"
+github_actions_runner__labels: "{{ (github_actions_runner_instance.labels + github_actions_runner_common_labels) | unique | join(',') }}"
+
+# Probe results (tasks/probe.yml), interpreted.
+github_actions_runner__volume_exists: "{{ github_actions_runner__volume_info.rc == 0 }}"
+github_actions_runner__mountpoint: >-
+  {{ (github_actions_runner__volume_info.stdout | from_json)[0].Mountpoint if github_actions_runner__volume_info.rc == 0 else '' }}
+github_actions_runner__registered: >-
+  {{ (github_actions_runner__runner_file.stat.exists | default(false))
+     and (github_actions_runner__credentials_file.stat.exists | default(false)) }}
+github_actions_runner__container_exists: "{{ github_actions_runner__container_info.rc == 0 }}"
+github_actions_runner__container: >-
+  {{ (github_actions_runner__container_info.stdout | from_json)[0] if github_actions_runner__container_info.rc == 0 else {} }}
+github_actions_runner__running: >-
+  {{ github_actions_runner__container_exists and (github_actions_runner__container.State.Running | default(false)) }}
+github_actions_runner__busy: >-
+  {{ github_actions_runner__running and ('Runner.Worker' in (github_actions_runner__processes.stdout | default(''))) }}
+github_actions_runner__managed: >-
+  {{ (github_actions_runner__container.Config.Labels | default({}, true)).get('infra.managed-by', '') == 'github_actions_runner' }}
+
+# Throwaway-container wrapper: read the token from stdin into the variable config.sh reads, then exec config.sh.
+github_actions_runner__stdin_exec: 'IFS= read -r ACTIONS_RUNNER_INPUT_TOKEN && export ACTIONS_RUNNER_INPUT_TOKEN && exec "$0" "$@"'
+
+# Tokens: read from the controller environment at run time, or from this run's hidden prompt. Never stored.
+github_actions_runner__registration_token: >-
+  {{ lookup('ansible.builtin.env', github_actions_runner_registration_token_env)
+     or (github_actions_runner__prompted_registration_token | default('')) }}
+github_actions_runner__removal_token: >-
+  {{ lookup('ansible.builtin.env', github_actions_runner_removal_token_env)
+     or (github_actions_runner__prompted_removal_token | default('')) }}

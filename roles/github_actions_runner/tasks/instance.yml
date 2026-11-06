@@ -1,0 +1,131 @@
+---
+# Converge one instance (loop_var github_actions_runner_instance).
+
+- name: Probe {{ github_actions_runner__name }}
+  ansible.builtin.include_tasks: probe.yml
+
+- name: Converge {{ github_actions_runner__name ~ ' to ' ~ github_actions_runner__state }}
+  when: github_actions_runner__state != 'absent'
+  block:
+    - name: Create the instance directory of {{ github_actions_runner__name }}
+      ansible.builtin.file:
+        path: "{{ github_actions_runner__dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Predict a definition change for {{ github_actions_runner__name }}
+      ansible.builtin.template:
+        src: compose.yml.j2
+        dest: "{{ github_actions_runner__definition }}"
+        owner: root
+        group: root
+        mode: "0600"
+      check_mode: true
+      diff: false
+      register: github_actions_runner__pending
+
+    # A changed definition recreates the container and a stop ends the listener: either kills a running job.
+    - name: Refuse to disturb a busy runner {{ github_actions_runner__name }}
+      ansible.builtin.assert:
+        that:
+          - >-
+            not github_actions_runner__busy
+            or (github_actions_runner__state == 'present' and not github_actions_runner__pending.changed)
+        fail_msg: >-
+          {{ github_actions_runner__name }} is running a job and this change would recreate or stop it.
+          Apply again when the runner is idle.
+        quiet: true
+
+    - name: Write the definition of {{ github_actions_runner__name }}
+      ansible.builtin.template:
+        src: compose.yml.j2
+        dest: "{{ github_actions_runner__definition }}"
+        owner: root
+        group: root
+        mode: "0600"
+        validate: docker compose --file %s config --quiet
+
+    - name: Register {{ github_actions_runner__name }}
+      ansible.builtin.include_tasks: register.yml
+      when: not github_actions_runner__registered
+
+    - name: Converge the container of {{ github_actions_runner__name }}
+      community.docker.docker_compose_v2:
+        project_src: "{{ github_actions_runner__dir }}"
+        files:
+          - compose.yml
+        state: "{{ 'present' if github_actions_runner__state == 'present' else 'stopped' }}"
+        pull: missing
+        recreate: auto
+        remove_orphans: true
+        wait: "{{ github_actions_runner__state == 'present' }}"
+        wait_timeout: "{{ github_actions_runner_wait_timeout }}"
+      # In check mode a new definition is not on disk yet, so Compose has nothing to read.
+      when: github_actions_runner__definition_stat.stat.exists or not ansible_check_mode
+
+- name: Remove {{ github_actions_runner__name }}
+  when: github_actions_runner__state == 'absent'
+  block:
+    - name: Refuse to remove a busy runner {{ github_actions_runner__name }}
+      ansible.builtin.assert:
+        that:
+          - not github_actions_runner__busy
+        fail_msg: "{{ github_actions_runner__name }} is running a job. Apply again when the runner is idle."
+        quiet: true
+
+    - name: Create the instance directory for removal of {{ github_actions_runner__name }}
+      ansible.builtin.file:
+        path: "{{ github_actions_runner__dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when:
+        - not github_actions_runner__definition_stat.stat.exists
+        - github_actions_runner__volume_exists or github_actions_runner__container_exists
+
+    - name: Restore the definition for removal of {{ github_actions_runner__name }}
+      ansible.builtin.template:
+        src: compose.yml.j2
+        dest: "{{ github_actions_runner__definition }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when:
+        - not github_actions_runner__definition_stat.stat.exists
+        - github_actions_runner__volume_exists or github_actions_runner__container_exists
+
+    - name: Stop the container of {{ github_actions_runner__name }}
+      community.docker.docker_compose_v2:
+        project_src: "{{ github_actions_runner__dir }}"
+        files:
+          - compose.yml
+        state: stopped
+      when:
+        - github_actions_runner__running
+        - github_actions_runner__definition_stat.stat.exists or not ansible_check_mode
+
+    - name: Deregister {{ github_actions_runner__name }}
+      ansible.builtin.include_tasks: deregister.yml
+      when:
+        - github_actions_runner__registered
+        - github_actions_runner__deregister
+
+    - name: Remove the container of {{ github_actions_runner__name }}
+      community.docker.docker_compose_v2:
+        project_src: "{{ github_actions_runner__dir }}"
+        files:
+          - compose.yml
+        state: absent
+        remove_volumes: "{{ github_actions_runner__purge }}"
+      when:
+        - github_actions_runner__container_exists or (github_actions_runner__purge and github_actions_runner__volume_exists)
+        - github_actions_runner__definition_stat.stat.exists or not ansible_check_mode
+
+    - name: Remove the definition of purged {{ github_actions_runner__name }}
+      ansible.builtin.file:
+        path: "{{ github_actions_runner__dir }}"
+        state: absent
+      when: github_actions_runner__purge

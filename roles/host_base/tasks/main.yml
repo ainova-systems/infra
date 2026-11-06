@@ -1,0 +1,181 @@
+---
+- name: Validate inputs and platform
+  ansible.builtin.include_tasks: assert.yml
+
+- name: Assert the target is not the control node
+  ansible.builtin.assert:
+    that:
+      - ansible_connection | default('ssh') != 'local'
+      - inventory_hostname not in ['localhost', '127.0.0.1', '::1']
+      - >-
+        ansible_facts.machine_id | default('') == ''
+        or ansible_facts.machine_id != (lookup('ansible.builtin.file', '/etc/machine-id', errors='ignore') | default('', true) | trim)
+    fail_msg: >-
+      host_base changes SSH and the firewall and refuses to run against the machine running Ansible.
+      Apply it from another workstation or the control container, or set host_base_allow_control_node
+      deliberately with console access as the fallback.
+    quiet: true
+  when: not host_base_allow_control_node | bool
+
+- name: Read installed packages
+  ansible.builtin.package_facts:
+    manager: apt
+
+# Installing systemd-timesyncd removes another time daemon; that is a reviewed change, never a side effect.
+- name: Assert no other time daemon is installed
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.packages.keys() | intersect(['chrony', 'ntp', 'ntpsec', 'openntpd']) | length == 0
+    fail_msg: Another time daemon is installed; remove it deliberately before applying host_base.
+    quiet: true
+
+- name: Install baseline packages
+  ansible.builtin.apt:
+    name:
+      - openssh-server
+      - sudo
+      - ufw
+      - unattended-upgrades
+      - systemd-timesyncd
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Account and keys come first: the SSH hardening below removes every other way in.
+- name: Create admin account
+  ansible.builtin.user:
+    name: "{{ host_base_admin_user }}"
+    shell: "{{ host_base_admin_shell }}"
+    create_home: true
+    state: present
+
+- name: Authorize admin public keys
+  ansible.posix.authorized_key:
+    user: "{{ host_base_admin_user }}"
+    key: "{{ host_base_admin_keys | join('\n') }}"
+    exclusive: "{{ host_base_admin_keys_exclusive | bool }}"
+    manage_dir: true
+    state: present
+
+- name: Grant admin passwordless sudo
+  ansible.builtin.copy:
+    dest: "{{ host_base__sudoers_file }}"
+    content: "{{ host_base_admin_user }} ALL=(ALL:ALL) NOPASSWD: ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+  when: host_base_admin_sudo_nopasswd | bool
+
+- name: Remove admin passwordless sudo
+  ansible.builtin.file:
+    path: "{{ host_base__sudoers_file }}"
+    state: absent
+  when: not host_base_admin_sudo_nopasswd | bool
+
+- name: Harden SSH to key-only login
+  ansible.builtin.include_role:
+    name: devsec.hardening.ssh_hardening
+  vars:
+    ssh_server_hardening: true
+    ssh_client_hardening: false
+    ssh_server_ports:
+      - "{{ host_base_ssh_port | string }}"
+    ssh_permit_root_login: "no"
+    ssh_server_password_login: false
+    ssh_challengeresponseauthentication: false
+    ssh_allow_users: "{{ host_base__ssh_users | join(' ') }}"
+    ssh_allow_tcp_forwarding: "{{ host_base_ssh_allow_tcp_forwarding }}"
+    ssh_allow_agent_forwarding: "{{ host_base_ssh_allow_agent_forwarding }}"
+
+# Allows are written before the deny default is enabled, so SSH never drops mid-run.
+- name: Allow inbound traffic
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto }}"
+    from_ip: "{{ item.from }}"
+  loop: "{{ host_base__allow_rules }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto }} from {{ item.from }}"
+
+- name: Remove retired inbound allows
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto }}"
+    from_ip: "{{ item.from }}"
+    delete: true
+  loop: "{{ host_base_firewall_remove }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto }} from {{ item.from }}"
+
+- name: Set firewall logging
+  community.general.ufw:
+    logging: "{{ host_base_firewall_logging }}"
+
+- name: Allow outbound by default
+  community.general.ufw:
+    default: allow
+    direction: outgoing
+
+- name: Enable firewall with inbound default deny
+  community.general.ufw:
+    state: enabled
+    default: deny
+    direction: incoming
+
+- name: Configure unattended upgrade schedule
+  ansible.builtin.template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+  when: host_base_auto_updates | bool
+
+- name: Configure unattended upgrade origins
+  ansible.builtin.template:
+    src: 52-host-base-unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/52host-base-unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+  when: host_base_auto_updates | bool
+
+- name: Set unattended upgrades service state
+  ansible.builtin.systemd_service:
+    name: unattended-upgrades
+    enabled: "{{ host_base_auto_updates | bool }}"
+    state: "{{ 'started' if host_base_auto_updates | bool else 'stopped' }}"
+
+- name: Create timesyncd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/timesyncd.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure time servers
+  ansible.builtin.template:
+    src: timesyncd.conf.j2
+    dest: "{{ host_base__timesyncd_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: host_base_ntp_servers | length > 0
+  notify: Restart timesyncd
+
+- name: Remove time server override
+  ansible.builtin.file:
+    path: "{{ host_base__timesyncd_dropin }}"
+    state: absent
+  when: host_base_ntp_servers | length == 0
+  notify: Restart timesyncd
+
+- name: Enable time sync
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd
+    enabled: true
+    state: started

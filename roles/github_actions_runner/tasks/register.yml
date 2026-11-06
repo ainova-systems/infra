@@ -1,0 +1,63 @@
+---
+# Register one instance whose data volume holds no registration. The token travels in the module payload, then
+# on stdin into a throwaway container, where config.sh reads it from ACTIONS_RUNNER_INPUT_TOKEN. It never
+# appears in a file, a container definition, a process argument or the host environment.
+
+- name: Prompt for a registration token
+  ansible.builtin.pause:
+    prompt: >-
+      Registration token for {{ github_actions_runner_scope_url }} (input hidden; set
+      {{ github_actions_runner_registration_token_env }} on the controller to skip this prompt)
+    echo: false
+  register: github_actions_runner__registration_prompt
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - github_actions_runner_token_prompt | bool
+    - github_actions_runner__registration_token | length == 0
+
+- name: Keep the prompted registration token for this run only
+  ansible.builtin.set_fact:
+    github_actions_runner__prompted_registration_token: "{{ github_actions_runner__registration_prompt.user_input }}"
+  no_log: true
+  when: github_actions_runner__registration_prompt is not skipped
+
+- name: Assert a registration token is available
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner__has_token
+    fail_msg: >-
+      {{ github_actions_runner__name }} is not registered and no token was given. Create a registration token for
+      {{ github_actions_runner_scope_url }} and pass it in {{ github_actions_runner_registration_token_env }}
+      or at the prompt. A token is needed only for a volume without a stored registration.
+    quiet: true
+  vars:
+    github_actions_runner__has_token: "{{ github_actions_runner__registration_token | length > 0 }}"
+  when: not ansible_check_mode
+
+- name: Register with the forge {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'compose', '--project-directory', github_actions_runner__dir,
+          '--file', github_actions_runner__definition,
+          'run', '--rm', '--no-deps', '-T', '--entrypoint', '/bin/sh', 'runner',
+          '-c', github_actions_runner__stdin_exec, github_actions_runner_data_path ~ '/config.sh',
+          '--unattended', '--url', github_actions_runner_scope_url,
+          '--name', github_actions_runner__name, '--labels', github_actions_runner__labels, '--work', '_work']
+         + (['--runnergroup', github_actions_runner_group] if github_actions_runner_group | length > 0 else [])
+         + (['--replace'] if github_actions_runner_replace_registration | bool else []) }}
+    stdin: "{{ github_actions_runner__registration_token }}"
+  register: github_actions_runner__registration
+  changed_when: github_actions_runner__registration.rc == 0
+  failed_when: false
+  no_log: true
+
+# config.sh prints no token; its tail names the forge's refusal (expired token, name taken, wrong scope).
+- name: Report a failed registration of {{ github_actions_runner__name }}
+  ansible.builtin.fail:
+    msg: >-
+      Registration of {{ github_actions_runner__name }} failed (rc {{ github_actions_runner__registration.rc }}):
+      {{ (github_actions_runner__registration.stdout_lines | default([]))[-15:] | join(' | ') }}
+  when:
+    - github_actions_runner__registration is not skipped
+    - github_actions_runner__registration.rc != 0

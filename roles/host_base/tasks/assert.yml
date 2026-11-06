@@ -1,0 +1,47 @@
+---
+# Shared by main.yml and check.yml: inputs and platform, read-only.
+- name: Gather minimal facts when the play did not
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - min
+  when: ansible_facts.distribution is not defined
+
+- name: Assert supported platform
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_base_supported_os
+        | selectattr('distribution', 'equalto', ansible_facts.distribution)
+        | selectattr('version', 'equalto', ansible_facts.distribution_version)
+        | list | length > 0
+    fail_msg: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} is not in host_base_supported_os"
+    quiet: true
+
+- name: Assert host_base inputs
+  ansible.builtin.assert:
+    that:
+      - host_base_admin_user is string
+      - host_base_admin_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - host_base_admin_user != 'root'
+      - host_base_admin_keys is sequence and host_base_admin_keys is not string
+      - host_base_admin_keys | length > 0
+      - host_base_admin_keys | reject('match', host_base__key_pattern) | list | length == 0
+      - host_base_ssh_port | int > 0 and host_base_ssh_port | int < 65536
+      - host_base_ssh_allow_from | length > 0
+      # An unset source (an empty environment lookup) must stop the run, never widen a rule.
+      - host_base_ssh_allow_from | reject('match', host_base__source_pattern) | list | length == 0
+      - host_base_ssh_extra_users | reject('match', '^[a-z_][a-z0-9_-]{0,31}$') | list | length == 0
+      - host_base_firewall_allow | rejectattr('port', 'defined') | list | length == 0
+      - host_base_firewall_allow | rejectattr('from', 'defined') | list | length == 0
+      - host_base_firewall_allow | map(attribute='from') | map('string') | reject('match', host_base__source_pattern) | list | length == 0
+      - host_base_firewall_allow | map(attribute='proto', default='') | reject('in', ['tcp', 'udp']) | list | length == 0
+      - host_base_firewall_remove | rejectattr('port', 'defined') | list | length == 0
+      - host_base_firewall_remove | rejectattr('from', 'defined') | list | length == 0
+      - host_base_firewall_remove | map(attribute='proto', default='') | reject('in', ['tcp', 'udp']) | list | length == 0
+      - host_base_firewall_remove | map(attribute='from') | map('string') | reject('match', host_base__source_pattern) | list | length == 0
+    fail_msg: >-
+      host_base needs host_base_admin_user (not root), at least one public key in host_base_admin_keys
+      (type and body only, never a private key), a valid SSH port, at least one SSH source, and firewall
+      items shaped {port, proto: tcp|udp, from: any|<address or CIDR>} (an empty source is refused).
+    quiet: true

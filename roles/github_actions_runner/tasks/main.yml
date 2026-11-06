@@ -1,0 +1,20 @@
+---
+# Apply: converge every declared runner instance. Idempotent; stops on the first unexpected state.
+
+- name: Validate the host and inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Create the definition directory
+  ansible.builtin.file:
+    path: "{{ github_actions_runner_base_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Converge runner instances
+  ansible.builtin.include_tasks: instance.yml
+  loop: "{{ github_actions_runner_instances }}"
+  loop_control:
+    loop_var: github_actions_runner_instance
+    label: "{{ github_actions_runner_instance.name }}"

@@ -1,0 +1,14 @@
+---
+# Collections the roles call. Exact versions, recorded 2026-11-06 from Galaxy.
+# A consuming project repeats these pins in its own requirements.yml next to ainova.infra.
+collections:
+  - name: devsec.hardening
+    version: 11.0.0
+  - name: community.docker
+    version: 5.4.0
+  - name: community.general
+    version: 14.0.0
+  - name: ansible.posix
+    version: 2.2.2
+  - name: amazon.aws
+    version: 12.1.0

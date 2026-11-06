@@ -1,0 +1,51 @@
+---
+# rootful: the system daemon runs; accounts in container_engine_rootless_accounts get their own daemon too.
+# rootless: no system daemon at all (masked, refused if active); every listed account gets its own daemon.
+container_engine_mode: rootful
+# Unprivileged accounts that get a rootless daemon. They must exist, hold no sudo rights and own
+# subordinate ID ranges of at least 65536 (Ubuntu allocates them when the account is created).
+container_engine_rootless_accounts: []
+
+# Pinned packages from the signed Docker apt repository. The upstream version; the apt revision suffix
+# is resolved on the host and must start with "<epoch>:<version>-".
+container_engine_version: "29.7.2"
+container_engine_epoch: "5"
+container_engine_containerd_version: "2.3.3"
+container_engine_compose_version: "5.4.0"
+# An installed engine at another version fails the run; true moves it to the pin (stops containers).
+container_engine_allow_upgrade: false
+
+container_engine_apt_repo_url: https://download.docker.com/linux/ubuntu
+container_engine_apt_key_url: https://download.docker.com/linux/ubuntu/gpg
+container_engine_apt_key_fingerprint: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+
+# Log rotation for every daemon (rootful /etc/docker/daemon.json, rootless ~/.config/docker/daemon.json).
+container_engine_log_driver: json-file
+container_engine_log_max_size: 10m
+container_engine_log_max_file: 3
+# Extra daemon.json keys merged over the log settings, identical for every daemon.
+container_engine_daemon_options: {}
+
+# Scheduled prune, one systemd timer per daemon. Keys:
+#   enabled                       timers installed and active
+#   on_calendar, randomized_delay systemd timer schedule
+#   prune_until                   only data unused for longer than this is pruned
+#   keep_label                    label (key=value) that exempts a container, image, network, volume or builder
+#   protected_container_labels    further labels whose stopped containers are kept (e.g. a runner service)
+#   build_cache_reserved          build cache kept by `buildx prune --reserved-space`
+#   buildkit_keep_storage_mb      cache kept inside docker-container builders
+# Named volumes are never pruned. Override single keys through container_engine_cleanup.
+container_engine_cleanup_defaults:
+  enabled: true
+  on_calendar: "*-*-* 03:30:00"
+  randomized_delay: 15min
+  prune_until: 24h
+  keep_label: infra.cleanup=keep
+  protected_container_labels: []
+  build_cache_reserved: 2GB
+  buildkit_keep_storage_mb: 2048
+container_engine_cleanup: {}
+
+container_engine_supported_os:
+  - distribution: Ubuntu
+    version: "24.04"

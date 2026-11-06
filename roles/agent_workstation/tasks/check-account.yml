@@ -1,0 +1,153 @@
+---
+# Read-only checks for one coding account. Commands run as the account, never as root.
+
+- name: Resolve account {{ agent_workstation__check_entry.item.name }}
+  ansible.builtin.set_fact:
+    agent_workstation__check_name: "{{ agent_workstation__check_entry.item.name }}"
+    agent_workstation__check_uid: "{{ (agent_workstation__check_entry.stdout | trim).split(':')[2] }}"
+    agent_workstation__check_home: "{{ (agent_workstation__check_entry.stdout | trim).split(':')[5] }}"
+    agent_workstation__check_scopes: >-
+      {{ agent_workstation__check_entry.item.credential_scopes | default(agent_workstation_default_credential_scopes) }}
+
+- name: Check account is not root for {{ agent_workstation__check_name }}
+  ansible.builtin.assert:
+    that:
+      - agent_workstation__check_uid | int != 0
+    fail_msg: "{{ agent_workstation__check_name }} is privileged"
+    quiet: true
+
+- name: Read sudo rights of {{ agent_workstation__check_name }}
+  ansible.builtin.command:
+    argv: [sudo, -l, -U, "{{ agent_workstation__check_name }}"]
+  environment:
+    LC_ALL: C
+  register: agent_workstation__check_sudo
+  changed_when: false
+  check_mode: false
+  # Some sudo implementations exit 0 on a denied listing; require the denial text.
+  failed_when: >-
+    agent_workstation__check_sudo.stdout is not match('^User ' ~ agent_workstation__check_name ~ ' is not allowed to run sudo on .*\.$')
+    or agent_workstation__check_sudo.stdout_lines | length != 1
+
+- name: Read private directories of {{ agent_workstation__check_name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__check_home }}/{{ item }}"
+    get_checksum: false
+  register: agent_workstation__check_dirs
+  loop: "{{ agent_workstation_private_dirs }}"
+
+- name: Check private directories of {{ agent_workstation__check_name }}
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists and item.stat.isdir and not item.stat.islnk
+      - item.stat.pw_name == agent_workstation__check_name
+      - item.stat.mode == '0700'
+    fail_msg: "{{ item.item }} of {{ agent_workstation__check_name }} is missing, foreign, a link or not 0700"
+    quiet: true
+  loop: "{{ agent_workstation__check_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Read account command links of {{ agent_workstation__check_name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__check_home }}/.local/bin/{{ item.command }}"
+    get_checksum: false
+  register: agent_workstation__check_links
+  loop: "{{ agent_workstation__commands | selectattr('link', 'equalto', 'account') | list }}"
+  loop_control:
+    label: "{{ item.command }}"
+
+- name: Check account command links of {{ agent_workstation__check_name }}
+  ansible.builtin.assert:
+    that:
+      - item.stat.islnk | default(false)
+      - item.stat.lnk_target == item.item.target
+    fail_msg: "~/.local/bin/{{ item.item.command }} of {{ agent_workstation__check_name }} does not point at {{ item.item.target }}"
+    quiet: true
+  loop: "{{ agent_workstation__check_links.results }}"
+  loop_control:
+    label: "{{ item.item.command }}"
+
+- name: Run tool version checks as {{ agent_workstation__check_name }}
+  ansible.builtin.command:
+    argv:
+      - "{{ (agent_workstation__check_home ~ '/.local/bin/') if item.link == 'account' else '/usr/local/bin/' }}{{ item.command }}"
+      - --version
+  register: agent_workstation__check_versions
+  changed_when: false
+  check_mode: false
+  failed_when: agent_workstation__check_versions.rc != 0 or item.check not in agent_workstation__check_versions.stdout
+  loop: "{{ agent_workstation__commands }}"
+  loop_control:
+    label: "{{ item.command }} {{ item.check }}"
+  become: true
+  become_user: "{{ agent_workstation__check_name }}"
+
+- name: Check Herdr console of {{ agent_workstation__check_name }}
+  when: "'herdr' in agent_workstation_enabled_tools"
+  become: true
+  become_user: "{{ agent_workstation__check_name }}"
+  block:
+    - name: Read Herdr service state of {{ agent_workstation__check_name }}
+      ansible.builtin.command:
+        argv: [systemctl, --user, "{{ item }}", --quiet, herdr.service]
+      environment:
+        XDG_RUNTIME_DIR: /run/user/{{ agent_workstation__check_uid }}
+      changed_when: false
+      check_mode: false
+      loop: [is-enabled, is-active]
+      when: agent_workstation_herdr_service
+
+    - name: Read Herdr integrations of {{ agent_workstation__check_name }}
+      ansible.builtin.command:
+        argv: ["{{ agent_workstation__check_home }}/.local/bin/herdr", integration, status]
+      register: agent_workstation__check_herdr
+      changed_when: false
+      check_mode: false
+
+    - name: Check Herdr integrations of {{ agent_workstation__check_name }}
+      ansible.builtin.assert:
+        that:
+          - agent_workstation__check_herdr.stdout_lines | select('match', '^' ~ item ~ ': current \(v[0-9]+\)') | list | length > 0
+        fail_msg: "Herdr {{ item }} integration is not current for {{ agent_workstation__check_name }}"
+        quiet: true
+      loop: "{{ agent_workstation_herdr_integrations }}"
+
+- name: Launch sandboxed Chrome as {{ agent_workstation__check_name }}
+  ansible.builtin.command:
+    argv: [timeout, "{{ agent_workstation_browser_check_timeout }}", /usr/local/bin/agent-playwright, --check]
+  register: agent_workstation__check_browser
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ agent_workstation__check_name }}"
+  when: agent_workstation_browser
+
+- name: Read credential files of {{ agent_workstation__check_name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__check_home }}/.config/git-credentials/{{ item.name }}.env"
+    get_checksum: false
+  register: agent_workstation__check_credentials
+  loop: "{{ agent_workstation__check_scopes }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Check stored credentials are private for {{ agent_workstation__check_name }}
+  ansible.builtin.assert:
+    that:
+      - not item.stat.islnk and item.stat.isreg
+      - item.stat.pw_name == agent_workstation__check_name
+      - item.stat.mode == '0600'
+      - item.stat.nlink == 1
+    fail_msg: "credential {{ item.item.name }} of {{ agent_workstation__check_name }} is not a private 0600 file"
+    quiet: true
+  loop: "{{ agent_workstation__check_credentials.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Collect scopes awaiting the owner for {{ agent_workstation__check_name }}
+  ansible.builtin.set_fact:
+    agent_workstation__auth_required: >-
+      {{ (agent_workstation__auth_required | default([]))
+         + (agent_workstation__check_credentials.results | rejectattr('stat.exists')
+            | map(attribute='item.name') | map('regex_replace', '^', agent_workstation__check_name ~ '/') | list) }}

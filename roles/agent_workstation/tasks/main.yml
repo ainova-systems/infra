@@ -1,0 +1,220 @@
+---
+# Apply. Idempotent; stops on the first unexpected state instead of repairing around it.
+
+- name: Assert supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version == '24.04'
+      - ansible_facts.architecture == 'x86_64'
+    fail_msg: agent_workstation supports Ubuntu 24.04 on x86_64 only
+    quiet: true
+
+- name: Assert inputs
+  ansible.builtin.assert:
+    that:
+      - agent_workstation_accounts | length > 0
+      - agent_workstation_accounts | map(attribute='name') | unique | length == agent_workstation_accounts | length
+      - agent_workstation_enabled_tools | difference(agent_workstation_tools.keys() | list) | length == 0
+      - agent_workstation_enabled_tools | difference(agent_workstation_tool_sources.keys() | list) | length == 0
+      - agent_workstation_root is match('^/[A-Za-z0-9._/-]+$')
+      - agent_workstation_playwright_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - agent_workstation_playwright_integrity is match('^sha512-[A-Za-z0-9+/]+=*$')
+    fail_msg: agent_workstation inputs are incomplete or inconsistent; see the role README
+    quiet: true
+
+- name: Assert account names
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z_][a-z0-9_-]*$')
+      - item.name != 'root'
+    fail_msg: "invalid coding account name: {{ item.name | default('') }}"
+    quiet: true
+  loop: "{{ agent_workstation_accounts }}"
+  loop_control:
+    label: "{{ item.name | default('') }}"
+
+- name: Assert credential scopes
+  ansible.builtin.assert:
+    that:
+      - scopes | length > 0
+      - scopes | map(attribute='name') | unique | length == scopes | length
+      - scopes | map(attribute='name') | select('match', '^[a-z0-9][a-z0-9-]*$') | list | length == scopes | length
+      - scopes | map(attribute='name') | intersect(agent_workstation__reserved_scopes) | length == 0
+      - scopes | map(attribute='url') | select('match', '^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)*$') | list | length == scopes | length
+      - scopes | selectattr('validate_url', 'defined') | map(attribute='validate_url') | reject('match', '^https://') | list | length == 0
+    fail_msg: "credential scopes of {{ item.name }} need unique kebab-case names and https URL prefixes"
+    quiet: true
+  vars:
+    scopes: "{{ item.credential_scopes | default(agent_workstation_default_credential_scopes) }}"
+  loop: "{{ agent_workstation_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert tool pins
+  ansible.builtin.assert:
+    that:
+      - item.version is match('^[0-9][0-9A-Za-z.+-]*$')
+      - item.sha256 is match('^[a-f0-9]{64}$')
+      - item.url is match('^https://')
+      - item.url is not search('[\x7b\x7d]')
+      - item.format in ['binary', 'tar.gz', 'deb']
+      - item.link in ['system', 'account']
+      - item.executable is match('^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$')
+    fail_msg: "tool {{ item.name }} needs a concrete version, a sha256 digest and an https source"
+    quiet: true
+  loop: "{{ agent_workstation__tools }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert Herdr integrations have their CLIs
+  ansible.builtin.assert:
+    that:
+      - "'herdr' in agent_workstation_enabled_tools"
+      - >-
+        agent_workstation_herdr_integrations
+        | map('extract', agent_workstation__herdr_runtime_tools)
+        | difference(agent_workstation_enabled_tools) | length == 0
+    fail_msg: every Herdr integration needs herdr and the matching CLI enabled
+    quiet: true
+  when: agent_workstation_herdr_service or agent_workstation_herdr_integrations | length > 0
+
+- name: Read coding accounts
+  ansible.builtin.getent:
+    database: passwd
+
+- name: Assert coding accounts exist and are not root
+  ansible.builtin.assert:
+    that:
+      - item.name in ansible_facts.getent_passwd
+      - ansible_facts.getent_passwd[item.name][1] | int != 0
+    fail_msg: "coding account {{ item.name }} is missing or privileged; apply dev_workstation first"
+    quiet: true
+  loop: "{{ agent_workstation_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Read sudo rights of coding accounts
+  ansible.builtin.command:
+    argv: [sudo, -l, -U, "{{ item.name }}"]
+  environment:
+    LC_ALL: C
+  register: agent_workstation__sudo
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop: "{{ agent_workstation_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert coding accounts cannot run sudo
+  ansible.builtin.assert:
+    that:
+      # Some sudo implementations exit 0 on a denied listing; require the denial text.
+      - item.stdout is match('^User ' ~ item.item.name ~ ' is not allowed to run sudo on .*\.$')
+      - item.stdout_lines | length == 1
+    fail_msg: "coding account {{ item.item.name }} can run sudo; coding accounts stay unprivileged"
+    quiet: true
+  loop: "{{ agent_workstation__sudo.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Install prerequisites
+  ansible.builtin.apt:
+    # acl lets Ansible run account-owned tasks as that unprivileged account.
+    name: [acl, ca-certificates, tar, python3]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create root-owned tool directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ agent_workstation_root }}"
+    - "{{ agent_workstation_root }}/tools"
+    # Staging is traversable by the unprivileged extraction identity.
+    - "{{ agent_workstation_stage_dir }}"
+    - "{{ agent_workstation_wrapper_dir }}"
+    - "{{ agent_workstation_share_dir }}"
+    - "{{ agent_workstation_config_dir }}"
+
+- name: Install pinned tools
+  ansible.builtin.include_tasks: artifact.yml
+  loop: "{{ agent_workstation__tools }}"
+  loop_control:
+    loop_var: agent_workstation__tool
+    label: "{{ agent_workstation__tool.name }} {{ agent_workstation__tool.version }}"
+
+- name: Write self-update-disabling wrappers
+  ansible.builtin.template:
+    src: wrapper.sh.j2
+    dest: "{{ agent_workstation_wrapper_dir }}/{{ item.command }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ agent_workstation__commands | selectattr('wrap') | list }}"
+  loop_control:
+    label: "{{ item.command }}"
+
+- name: Read system command paths
+  ansible.builtin.stat:
+    path: /usr/local/bin/{{ item.command }}
+    get_checksum: false
+  register: agent_workstation__system_links
+  loop: "{{ agent_workstation__commands | selectattr('link', 'equalto', 'system') | list }}"
+  loop_control:
+    label: "{{ item.command }}"
+
+- name: Assert system command paths are managed links
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or item.stat.islnk
+    fail_msg: "unmanaged file at /usr/local/bin/{{ item.item.command }}"
+    quiet: true
+  loop: "{{ agent_workstation__system_links.results }}"
+  loop_control:
+    label: "{{ item.item.command }}"
+
+- name: Link system commands
+  ansible.builtin.file:
+    src: "{{ item.target }}"
+    dest: /usr/local/bin/{{ item.command }}
+    state: link
+    force: true
+    owner: root
+    group: root
+  loop: "{{ agent_workstation__commands | selectattr('link', 'equalto', 'system') | list }}"
+  loop_control:
+    label: "{{ item.command }}"
+
+- name: Prepare shared browser
+  ansible.builtin.include_tasks: browser.yml
+  when: agent_workstation_browser
+
+- name: Install agent-auth
+  ansible.builtin.template:
+    src: agent-auth.py.j2
+    dest: "{{ agent_workstation_auth_command }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write credential scopes for agent-auth
+  ansible.builtin.template:
+    src: credential-scopes.json.j2
+    dest: "{{ agent_workstation_config_dir }}/credential-scopes.json"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure coding accounts
+  ansible.builtin.include_tasks: account.yml
+  loop: "{{ agent_workstation_accounts }}"
+  loop_control:
+    loop_var: agent_workstation__account
+    label: "{{ agent_workstation__account.name }}"

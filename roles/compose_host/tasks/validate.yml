@@ -1,0 +1,58 @@
+---
+# Shared by main.yml and check.yml: refuse unsupported hosts and malformed input before anything runs.
+
+- name: Assert a supported operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] == '24.04'
+      - ansible_facts['architecture'] == 'x86_64'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: compose_host supports Ubuntu 24.04 on x86_64 with systemd only.
+    quiet: true
+
+- name: Assert compose_host inputs
+  ansible.builtin.assert:
+    that:
+      - compose_host_deploy_user is match('^[a-z_][a-z0-9_-]{0,30}$')
+      - compose_host_deploy_user != 'root'
+      - compose_host_deploy_user != (host_base_admin_user | default(''))
+      - compose_host_deploy_keys is sequence and compose_host_deploy_keys is not string
+      - compose_host_deploy_keys | reject('match', compose_host__key_pattern) | list | length == 0
+      - compose_host_deploy_docker_access is boolean
+      - compose_host_root is match('^/[A-Za-z0-9._/-]+$') and compose_host_root not in ['/', '/home', '/root', '/etc', '/var', '/usr']
+      - compose_host_stack_dirs is sequence and compose_host_stack_dirs is not string
+      - compose_host_stack_dirs | select('match', '^[a-z0-9][a-z0-9-]{0,62}$') | list | length == compose_host_stack_dirs | length
+      - compose_host_stack_dirs | unique | length == compose_host_stack_dirs | length
+      - compose_host_private_dir is match('^[A-Za-z0-9._-]+$') and compose_host_private_dir not in ['.', '..']
+      - compose_host_env_file is match('^[A-Za-z0-9._-]+$') and compose_host_env_file not in ['.', '..']
+      - compose_host_deploy_shell is match('^/[A-Za-z0-9._/-]+$')
+      - compose_host_deploy_home is match('^/[A-Za-z0-9._/-]+$') and compose_host_deploy_home not in ['/', '/root']
+      - compose_host_forbidden_groups is sequence and compose_host_forbidden_groups is not string
+    fail_msg: >-
+      Set compose_host_deploy_user (not root, not the admin account), public keys without private material,
+      an absolute stack root outside system directories and unique lowercase stack names.
+    quiet: true
+
+- name: Read the docker group
+  ansible.builtin.command:
+    argv: [getent, group, docker]
+  register: compose_host__docker_group
+  changed_when: false
+  failed_when: compose_host__docker_group.rc not in [0, 2]
+  check_mode: false
+
+- name: Assert the docker group exists when the deploy account needs the daemon
+  ansible.builtin.assert:
+    that:
+      - not compose_host_deploy_docker_access or compose_host__docker_group.rc == 0
+    fail_msg: compose_host_deploy_docker_access needs a rootful Docker Engine; apply container_engine first.
+    quiet: true
+
+- name: Read the deploy account
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ compose_host_deploy_user }}"]
+  register: compose_host__passwd
+  changed_when: false
+  failed_when: compose_host__passwd.rc not in [0, 2]
+  check_mode: false

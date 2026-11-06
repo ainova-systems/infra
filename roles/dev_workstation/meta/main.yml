@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: dev_workstation
+  namespace: ainova
+  author: Ainova Systems
+  description: Coding accounts with Git identity, pinned Node/Corepack/.NET, GitHub CLI, Intelligence CLI and per-organization Git credential scopes.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - development
+    - workstation
+    - git
+dependencies: []

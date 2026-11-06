@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+if [ -r {{ dev_workstation_config_dir }}/toolchain.env ]; then
+  set -a
+  . {{ dev_workstation_config_dir }}/toolchain.env
+  set +a
+fi
+export PATH="$PATH:{{ dev_workstation_dotnet_root }}:$HOME/.dotnet/tools"

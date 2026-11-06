@@ -1,0 +1,22 @@
+---
+# Derived values, not inputs: set container_engine_* variables from defaults/main.yml instead.
+container_engine__cleanup: "{{ container_engine_cleanup_defaults | combine(container_engine_cleanup) }}"
+container_engine__rootful: "{{ container_engine_mode == 'rootful' }}"
+container_engine__arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] | default(ansible_facts.architecture) }}"
+container_engine__keyring: /etc/apt/keyrings/container-engine-docker.asc
+container_engine__key_candidate: /etc/apt/keyrings/container-engine-docker.asc.candidate
+container_engine__source_file: /etc/apt/sources.list.d/container-engine-docker.list
+container_engine__cleanup_script: /usr/local/libexec/container-engine-cleanup
+container_engine__rootful_socket: /var/run/docker.sock
+container_engine__packages:
+  docker-ce: "{{ container_engine_epoch }}:{{ container_engine_version }}-"
+  docker-ce-cli: "{{ container_engine_epoch }}:{{ container_engine_version }}-"
+  docker-ce-rootless-extras: "{{ container_engine_epoch }}:{{ container_engine_version }}-"
+  containerd.io: "{{ container_engine_containerd_version }}-"
+  docker-compose-plugin: "{{ container_engine_compose_version }}-"
+container_engine__daemon_config: >-
+  {{ {'log-driver': container_engine_log_driver,
+      'log-opts': {'max-size': container_engine_log_max_size, 'max-file': container_engine_log_max_file | string}}
+     | combine(container_engine_daemon_options) }}
+# Root-only wrapper that runs a command as a rootless account with its session bus and socket.
+container_engine__as_account: /usr/local/libexec/container-engine-as

@@ -1,0 +1,46 @@
+---
+# swarm_node: create or join a Docker Swarm as manager or worker, with cluster ports open only to listed peers.
+# Nothing is guessed: the node role is explicit, creating a swarm is a separate explicit switch, and a daemon
+# that already runs containers is refused unless that is declared.
+
+# manager | worker. Required; there is no default role.
+swarm_node_role: ""
+
+# true: create a new swarm on this node (manager only). false: join an existing swarm through swarm_node_join_addrs.
+swarm_node_init: false
+
+# Address (IP or interface name) other nodes reach this node on. Required. Keep the value itself out of the
+# shared repository: projects read it from their environment.
+swarm_node_advertise_addr: ""
+
+# Cluster management port (manager-to-manager and node-to-manager).
+swarm_node_listen_port: 2377
+
+# Manager addresses (host or host:port) to join through. Required when swarm_node_init is false.
+swarm_node_join_addrs: []
+
+# Controller variable carrying the join token (manager or worker token, matching swarm_node_role) at run time.
+swarm_node_join_token_env: SWARM_NODE_JOIN_TOKEN
+
+# Prompt (hidden input) when the join token variable is empty. false: fail instead.
+swarm_node_token_prompt: true
+
+# Expected swarm cluster ID, once known. Asserted when set, so a node cannot sit in another swarm unnoticed.
+swarm_node_cluster_id: ""
+
+# Addresses or CIDRs of the other swarm nodes. Cluster ports are opened to these sources only.
+# Empty (a single-node swarm): no cluster port is opened.
+swarm_node_peers: []
+
+# Manage the ufw rules for cluster ports. false: the firewall is managed elsewhere (check still asserts no broad rule).
+swarm_node_firewall: true
+
+# Allow ESP (IP protocol 50) from peers, needed by encrypted overlay networks.
+swarm_node_overlay_encryption: true
+
+# Permit creating or joining a swarm on a daemon that already runs containers. Default false: a shared daemon
+# is never turned into a swarm node by accident.
+swarm_node_allow_existing_workloads: false
+
+# Docker SDK for Python, used by community.docker.docker_swarm (distribution package, pinned version).
+swarm_node_python_docker_package: python3-docker=5.0.3*

@@ -1,0 +1,28 @@
+---
+# Read-only: the deploy account holds no sudo right and no administrative group. Shared by apply and check.
+
+- name: Read the deploy account's groups
+  ansible.builtin.command:
+    argv: [id, -nG, --, "{{ compose_host_deploy_user }}"]
+  register: compose_host__groups
+  changed_when: false
+  check_mode: false
+
+- name: Read the deploy account's sudo rights
+  ansible.builtin.command:
+    argv: [sudo, -n, -l, -U, "{{ compose_host_deploy_user }}"]
+  register: compose_host__sudo
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert the deploy account is unprivileged
+  ansible.builtin.assert:
+    that:
+      - compose_host__groups.stdout.split() | intersect(compose_host_forbidden_groups) | length == 0
+      - ('docker' in compose_host__groups.stdout.split()) == compose_host_deploy_docker_access
+      - compose_host__sudo.stdout is search('is not allowed to run sudo')
+    fail_msg: >-
+      {{ compose_host_deploy_user }} holds an administrative group, a sudo rule, or docker membership other than
+      declared (compose_host_deploy_docker_access: {{ compose_host_deploy_docker_access }}). Remove the grant at its source.
+    quiet: true

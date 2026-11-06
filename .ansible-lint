@@ -1,0 +1,13 @@
+---
+# Production profile: FQCN everywhere, no `latest`, named tasks, role-prefixed variables.
+profile: production
+# scripts/validate.sh installs requirements.yml into .tmp/validate first.
+offline: true
+exclude_paths:
+  - .tmp/
+  - .ansible/
+  - .git/
+  - container/
+kinds:
+  - yaml: "tests/inventory.yml"
+  - playbook: "tests/all-roles.yml"

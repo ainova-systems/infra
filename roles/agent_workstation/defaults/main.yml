@@ -1,0 +1,224 @@
+---
+# agent_workstation: coding-agent CLIs, terminal tools, shared Playwright browser and the
+# agent-auth hidden-input credential helper for unprivileged coding accounts.
+# Every version is a pin. Moving a pin means changing version and sha256 together.
+
+# Coding accounts served by this role. The accounts must already exist (dev_workstation).
+# credential_scopes must list the same {name, url} pairs as the dev_workstation entry for the
+# account; omit it to use agent_workstation_default_credential_scopes.
+#   - name: coder
+#     credential_scopes:
+#       - {name: default, url: "https://github.com"}
+#       - {name: shared, url: "https://github.com/example-org"}
+agent_workstation_accounts: []
+
+# Scopes used when an account declares none. Same contract as dev_workstation.
+agent_workstation_default_credential_scopes:
+  - name: default
+    url: https://github.com
+
+# A coding account that is root or can run sudo always stops the run; no variable turns this off.
+
+# Tools installed. Remove a name to skip that tool on a host.
+agent_workstation_enabled_tools:
+  - claude_code
+  - codex
+  - cursor_agent
+  - opencode
+  - herdr
+  - fresh
+  - lazygit
+  - vscode_cli
+
+# Pins. sha256 is the digest of the downloaded file named by agent_workstation_tool_sources.
+# version_check (optional) is the text `<command> --version` must contain; default: version.
+agent_workstation_tools:
+  claude_code:
+    version: 2.1.308-1
+    version_check: 2.1.308
+    sha256: dfc28f13b1fa6d3e37530ee86fd342cd16032c13e0b1c2989491c9deea07f801
+  codex:
+    version: 0.164.0
+    sha256: 3ec55053109608d5038f7e50750f7d25f768dfd740fef071aa710e2559b63aac
+  cursor_agent:
+    version: 2026.10.22-27dcf5f
+    sha256: 85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294
+  opencode:
+    version: 1.19.4
+    sha256: 849bd6b3d959a1d2ef200ed1634a51c79a45ca236aa26665d75debd694805cce
+  herdr:
+    version: 0.9.3
+    sha256: 18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7
+  fresh:
+    version: 0.5.2
+    sha256: 2dde1d4e7f5956fdbff5c36561525c98cece2422e284937c897ff2eb17c4037d
+  lazygit:
+    version: 0.65.1
+    sha256: 02beacbcda0fa342e50ae3480ba8147307353af3fb28e1d5f790e02329c201a6
+  vscode_cli:
+    version: 1.140.0
+    commit: 07f806f999227108933c2e30515b26eecc1fda74
+    sha256: 51ca3c8878a73d8c4e3c8664fd0fd630d113a0392d980437d88fcb86b640c729
+
+# Where each pin is fetched from and how it is unpacked. {version} and {commit} are replaced
+# from agent_workstation_tools. format: binary | tar.gz | deb. strip: tar --strip-components.
+# link: system (/usr/local/bin) or account (~/.local/bin). wrap: exec through a root-owned
+# wrapper that disables the tool's self-updater, so the pin stays the installed version.
+agent_workstation_tool_sources:
+  claude_code:
+    url: https://downloads.claude.ai/claude-code/apt/stable/pool/main/c/claude-code/claude-code_{version}_amd64.deb
+    format: deb
+    executable: usr/bin/claude
+    commands: [claude]
+    link: account
+    wrap: true
+  codex:
+    url: https://github.com/openai/codex/releases/download/rust-v{version}/codex-package-x86_64-unknown-linux-musl.tar.gz
+    format: tar.gz
+    strip: 0
+    executable: bin/codex
+    commands: [codex]
+    link: account
+    wrap: true
+  cursor_agent:
+    url: https://downloads.cursor.com/lab/{version}/linux/x64/agent-cli-package.tar.gz
+    format: tar.gz
+    strip: 1
+    executable: cursor-agent
+    commands: [cursor-agent, agent]
+    link: account
+    wrap: true
+  opencode:
+    url: https://github.com/anomalyco/opencode/releases/download/v{version}/opencode-linux-x64.tar.gz
+    format: tar.gz
+    strip: 0
+    executable: opencode
+    commands: [opencode]
+    link: account
+    wrap: true
+  herdr:
+    url: https://github.com/herdrdev/herdr/releases/download/v{version}/herdr-linux-x86_64
+    format: binary
+    executable: herdr
+    commands: [herdr]
+    link: account
+    wrap: false
+  fresh:
+    url: https://github.com/sinelaw/fresh/releases/download/v{version}/fresh-editor-x86_64-unknown-linux-musl.tar.gz
+    format: tar.gz
+    strip: 1
+    executable: fresh
+    commands: [fresh]
+    link: system
+    wrap: false
+  lazygit:
+    url: https://github.com/jesseduffield/lazygit/releases/download/v{version}/lazygit_{version}_linux_x86_64.tar.gz
+    format: tar.gz
+    strip: 0
+    executable: lazygit
+    commands: [lazygit]
+    link: system
+    wrap: false
+  vscode_cli:
+    url: https://vscode.download.prss.microsoft.com/dbazure/download/stable/{commit}/vscode_cli_linux_x64_cli.tar.gz
+    format: tar.gz
+    strip: 0
+    executable: code
+    commands: [code]
+    link: system
+    wrap: false
+
+# Environment exported by every wrapper before exec.
+agent_workstation_wrapper_env:
+  DISABLE_AUTOUPDATER: "1"
+  OPENCODE_DISABLE_AUTOUPDATE: "1"
+
+# Host paths. Installed versions are kept side by side; running sessions keep their binary.
+agent_workstation_root: /opt/agent-workstation
+agent_workstation_stage_dir: /var/cache/agent-workstation
+agent_workstation_wrapper_dir: /usr/local/lib/agent-workstation/bin
+agent_workstation_share_dir: /usr/local/share/agent-workstation
+agent_workstation_config_dir: /etc/agent-workstation
+
+# Account-private directories created 0700 before any account file is written.
+agent_workstation_private_dirs:
+  - .config
+  - .config/systemd
+  - .config/systemd/user
+  - .config/herdr
+  - .config/fresh
+  - .config/opencode
+  - .config/git-credentials
+  - .codex
+  - .claude
+  - .cursor
+  - .local
+  - .local/bin
+
+# Herdr persistent console as a per-account systemd user service. Applying never restarts a
+# running console; a changed unit takes effect on the account's next restart of the service.
+agent_workstation_herdr_service: true
+agent_workstation_herdr_working_directory: "%h"
+agent_workstation_herdr_path: "%h/.local/bin:%h/.dotnet/tools:/usr/local/bin:/usr/bin:/bin"
+# Export DOCKER_HOST for a rootless engine socket under the account runtime directory.
+agent_workstation_herdr_rootless_docker: true
+# Runtimes whose Herdr integration is installed; each needs its CLI enabled above.
+agent_workstation_herdr_integrations: [claude, codex, cursor, opencode]
+# Written only when ~/.config/herdr/config.toml is absent; existing settings are preserved.
+agent_workstation_herdr_config: |
+  onboarding = false
+  [session]
+  resume_agents_on_restore = true
+
+# Fresh editor defaults merged under existing preferences; the account's own values win.
+# Example: {theme: "builtin://nord"}
+agent_workstation_fresh_defaults: {}
+
+# Shared Playwright Core and sandboxed Chrome readiness (requires Node from dev_workstation).
+agent_workstation_browser: true
+agent_workstation_node_executable: /usr/bin/node
+agent_workstation_npm_executable: /usr/bin/npm
+agent_workstation_playwright_version: 1.63.0
+# npm lockfile integrity for playwright-core at the pinned version.
+agent_workstation_playwright_integrity: sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==
+# Playwright channel "chrome" resolves to this path; an existing root-owned browser is kept.
+agent_workstation_chrome_dir: /opt/google/chrome
+agent_workstation_browser_check_timeout: 60s
+# Signed OS packages for the shared Chrome and project-specific Chromium builds.
+agent_workstation_browser_packages:
+  - xvfb
+  - fonts-noto-color-emoji
+  - fonts-unifont
+  - libfontconfig1
+  - libfreetype6
+  - xfonts-cyrillic
+  - xfonts-scalable
+  - fonts-liberation
+  - fonts-ipafont-gothic
+  - fonts-wqy-zenhei
+  - fonts-tlwg-loma-otf
+  - fonts-freefont-ttf
+  - libasound2t64
+  - libatk-bridge2.0-0t64
+  - libatk1.0-0t64
+  - libatspi2.0-0t64
+  - libcairo2
+  - libcups2t64
+  - libdbus-1-3
+  - libdrm2
+  - libgbm1
+  - libglib2.0-0t64
+  - libnspr4
+  - libnss3
+  - libpango-1.0-0
+  - libx11-6
+  - libxcb1
+  - libxcomposite1
+  - libxdamage1
+  - libxext6
+  - libxfixes3
+  - libxkbcommon0
+  - libxrandr2
+
+# agent-auth: hidden-input credential helper installed at this path.
+agent_workstation_auth_command: /usr/local/bin/agent-auth

@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Unused container engine data cleanup ({{ container_engine__daemon.account }})
+
+[Timer]
+OnCalendar={{ container_engine__cleanup.on_calendar }}
+RandomizedDelaySec={{ container_engine__cleanup.randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

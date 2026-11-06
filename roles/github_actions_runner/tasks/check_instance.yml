@@ -1,0 +1,76 @@
+---
+# Read-only check of one instance (loop_var github_actions_runner_instance).
+
+- name: Probe {{ github_actions_runner__name }}
+  ansible.builtin.include_tasks: probe.yml
+
+- name: Read the stored definition of {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv: [cat, --, "{{ github_actions_runner__definition }}"]
+  register: github_actions_runner__definition_content
+  changed_when: false
+  check_mode: false
+  when: github_actions_runner__definition_stat.stat.exists
+
+- name: Assert registered and running for {{ github_actions_runner__name }}
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner__definition_stat.stat.exists
+      - github_actions_runner__definition_stat.stat.uid == 0
+      - github_actions_runner__definition_stat.stat.mode == '0600'
+      - (github_actions_runner__definition_content.stdout | trim) == (lookup('ansible.builtin.template', 'compose.yml.j2') | trim)
+      - github_actions_runner__volume_exists
+      - github_actions_runner__registered
+      - github_actions_runner__container_exists
+      - github_actions_runner__managed
+      - github_actions_runner__running
+      - github_actions_runner__container.HostConfig.RestartPolicy.Name == 'unless-stopped'
+    fail_msg: >-
+      {{ github_actions_runner__name }}: definition missing, private or drifted; volume, stored registration or
+      running container missing. Apply the role (a missing registration needs a registration token).
+    quiet: true
+  when: github_actions_runner__state == 'present'
+
+- name: Assert the container matches its definition for {{ github_actions_runner__name }}
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner__container.Config.Image == github_actions_runner_image
+      - not github_actions_runner__container.HostConfig.Privileged
+      - github_actions_runner__container.HostConfig.NanoCpus == (github_actions_runner_instance.cpus * 1000000000) | int
+      - github_actions_runner__container.HostConfig.Memory == github_actions_runner_instance.memory * 1048576
+      - github_actions_runner__container.HostConfig.MemorySwap == github_actions_runner__container.HostConfig.Memory
+      - (github_actions_runner__socket.stat.gid | string) in (github_actions_runner__container.HostConfig.GroupAdd | default([], true))
+      - >-
+        github_actions_runner__container.Mounts | selectattr('Destination', 'equalto', github_actions_runner_data_path)
+        | selectattr('Name', 'defined') | selectattr('Name', 'equalto', github_actions_runner__volume) | list | length == 1
+    fail_msg: >-
+      {{ github_actions_runner__name }} runs with another image, privilege, limit, socket group or data volume than
+      declared. Apply the role while the runner is idle to recreate it.
+    quiet: true
+  when:
+    - github_actions_runner__state != 'absent'
+    - github_actions_runner__container_exists
+
+- name: Assert registered and stopped for {{ github_actions_runner__name }}
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner__definition_stat.stat.exists
+      - (github_actions_runner__definition_content.stdout | trim) == (lookup('ansible.builtin.template', 'compose.yml.j2') | trim)
+      - github_actions_runner__registered
+      - not github_actions_runner__running
+    fail_msg: "{{ github_actions_runner__name }} should be registered with its container stopped."
+    quiet: true
+  when: github_actions_runner__state == 'stopped'
+
+- name: Assert removed for {{ github_actions_runner__name }}
+  ansible.builtin.assert:
+    that:
+      - not github_actions_runner__container_exists
+      - not github_actions_runner__purge or not github_actions_runner__volume_exists
+      - not github_actions_runner__purge or not github_actions_runner__definition_stat.stat.exists
+      - not github_actions_runner__deregister or not github_actions_runner__registered
+    fail_msg: >-
+      {{ github_actions_runner__name }} is declared absent but its container, its stored registration or (with purge)
+      its volume or definition remains.
+    quiet: true
+  when: github_actions_runner__state == 'absent'

@@ -1,0 +1,89 @@
+---
+# dev_workstation: coding accounts, Git identity, pinned toolchain and per-organization Git credentials.
+# Provisioning never clones a repository, never syncs project Intelligence and never stores a token.
+
+# Coding accounts. Every entry: {name, git_name, git_email, credential_scopes}; no other keys are accepted,
+# so a credential cannot ride in on host variables. credential_scopes is optional and defaults to
+# dev_workstation_default_credential_scopes. Scope: {name, url}; url is an https prefix with no trailing slash.
+#   - name: coder
+#     git_name: Coder Agent
+#     git_email: coder@example.com
+#     credential_scopes:
+#       - {name: default, url: https://github.com}
+#       - {name: shared, url: https://github.com/example-org}
+dev_workstation_accounts: []
+
+dev_workstation_default_credential_scopes:
+  - name: default
+    url: https://github.com
+
+# Login shell for accounts the role creates; home mode is enforced on every coding account's home.
+dev_workstation_account_shell: /bin/bash
+dev_workstation_home_mode: "0750"
+
+# OS packages from the distribution archive (signed by the OS vendor).
+dev_workstation_packages:
+  - acl
+  - ca-certificates
+  - git
+  - gnupg
+  - libicu-dev
+  - libssl-dev
+  - make
+  - zlib1g
+
+# .NET SDKs, side by side, in ascending version order (the newest extracted last owns the dotnet host).
+# Exact versions and SHA-512 from the official release metadata (releases.json per channel).
+dev_workstation_dotnet_root: /usr/share/dotnet
+dev_workstation_dotnet_sdks:
+  - version: 8.0.427
+    sha512: 85725692f465f5024b9b42a159a29d9f73e8c57ad9e8bfe1e7028a505d18031d68931e8aa3f9de44145b08170dde897c8a78e1aa18d4219698b6891af7095d39
+  - version: 10.0.403
+    sha512: b7b3d8461cf98b07d2552ce9199702fa3ad010ac2671a5f8cd5136f7534e50f6855ba7bbb02b11494563f1d04156276a31cda1103b900e5eecd0d9473dc7b9c5
+dev_workstation_dotnet_download_url: "https://builds.dotnet.microsoft.com/dotnet/Sdk/{version}/dotnet-sdk-{version}-linux-x64.tar.gz"
+
+# .NET global tools installed into every coding account's own ~/.dotnet/tools. List of {name, version}.
+#   - {name: dotnet-ef, version: 8.0.11}
+dev_workstation_dotnet_tools: []
+
+# Node.js from the NodeSource signed repository, exact package version, held.
+dev_workstation_node_major: 26
+dev_workstation_node_package_version: 26.13.0-1nodesource1
+dev_workstation_node_repo_url: "https://deb.nodesource.com/node_{{ dev_workstation_node_major }}.x"
+dev_workstation_node_key_url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+dev_workstation_node_key_fingerprints:
+  - 6F71F525282841EEDAF851B42F59B5F99B1BE0B4
+
+# Corepack is pinned from npm into its own versioned prefix (Node 25+ no longer bundles it).
+# The pnpm shim runs the version a repository pins in `packageManager`; the fallback is for repositories
+# that pin none and is pre-fetched per account.
+dev_workstation_corepack_version: 0.36.0
+dev_workstation_pnpm_fallback_version: 9.15.9
+
+# GitHub CLI from its signed repository, exact version, held. No login, no token, no wrapper.
+dev_workstation_gh_version: 2.102.0
+dev_workstation_gh_repo_url: https://cli.github.com/packages
+dev_workstation_gh_key_url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+dev_workstation_gh_key_fingerprints:
+  - 2C6106201985B60E6C7AC87323F3D4EA75716059
+  - 7F38BBB59D064DBCB3D84D725612B36462313325
+
+# Intelligence CLI, system-wide. Apply installs the pinned version when the host has none or an older one;
+# it never downgrades a newer copy the update timer installed.
+dev_workstation_intelligence_package: "@ainova-systems/intelligence"
+dev_workstation_intelligence_version: 0.24.0
+
+# Update timer. It updates the CLI only; it never runs sync, init or update in a checkout.
+# update_version is the npm version or dist-tag the timer installs. The default repairs drift to the pin;
+# a project that wants hosts to track new releases sets a dist-tag here and records that decision itself.
+dev_workstation_intelligence_update_enabled: true
+dev_workstation_intelligence_update_version: "{{ dev_workstation_intelligence_version }}"
+dev_workstation_intelligence_update_on_calendar: weekly
+dev_workstation_intelligence_update_randomized_delay: 1h
+
+# Paths owned by this role.
+dev_workstation_state_dir: /var/lib/dev-workstation
+dev_workstation_tools_dir: /opt/dev-workstation
+dev_workstation_config_dir: /etc/dev-workstation
+dev_workstation_libexec_dir: /usr/local/libexec/dev-workstation
+dev_workstation_credential_helper: /usr/local/bin/git-credential-scope

@@ -1,0 +1,70 @@
+---
+# Syntax and lint target that imports every role of the collection, apply and check entry points.
+# scripts/validate.sh fails when a directory under roles/ is missing here, or listed here but absent.
+- name: Apply every role
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Import host_base
+      ansible.builtin.import_role:
+        name: ainova.infra.host_base
+    - name: Import container_engine
+      ansible.builtin.import_role:
+        name: ainova.infra.container_engine
+    - name: Import github_actions_runner
+      ansible.builtin.import_role:
+        name: ainova.infra.github_actions_runner
+    - name: Import compose_host
+      ansible.builtin.import_role:
+        name: ainova.infra.compose_host
+    - name: Import swarm_node
+      ansible.builtin.import_role:
+        name: ainova.infra.swarm_node
+    - name: Import dev_workstation
+      ansible.builtin.import_role:
+        name: ainova.infra.dev_workstation
+    - name: Import agent_workstation
+      ansible.builtin.import_role:
+        name: ainova.infra.agent_workstation
+    - name: Import host_health
+      ansible.builtin.import_role:
+        name: ainova.infra.host_health
+
+- name: Check every role
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Check host_base
+      ansible.builtin.import_role:
+        name: ainova.infra.host_base
+        tasks_from: check
+    - name: Check container_engine
+      ansible.builtin.import_role:
+        name: ainova.infra.container_engine
+        tasks_from: check
+    - name: Check github_actions_runner
+      ansible.builtin.import_role:
+        name: ainova.infra.github_actions_runner
+        tasks_from: check
+    - name: Check compose_host
+      ansible.builtin.import_role:
+        name: ainova.infra.compose_host
+        tasks_from: check
+    - name: Check swarm_node
+      ansible.builtin.import_role:
+        name: ainova.infra.swarm_node
+        tasks_from: check
+    - name: Check dev_workstation
+      ansible.builtin.import_role:
+        name: ainova.infra.dev_workstation
+        tasks_from: check
+    - name: Check agent_workstation
+      ansible.builtin.import_role:
+        name: ainova.infra.agent_workstation
+        tasks_from: check
+    - name: Check host_health
+      ansible.builtin.import_role:
+        name: ainova.infra.host_health
+        tasks_from: check

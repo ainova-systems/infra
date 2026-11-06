@@ -1,0 +1,37 @@
+---
+# Read-only: Chrome and its parents are root-owned, not links, and nothing below is writable
+# by group or others (a link's own mode bits carry no meaning; its owner still must be root).
+# Shared by apply and check.
+
+- name: Read Chrome paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  register: agent_workstation__chrome_paths
+  loop:
+    - "{{ agent_workstation_chrome_dir | dirname }}"
+    - "{{ agent_workstation_chrome_dir }}"
+    - "{{ agent_workstation__chrome }}"
+
+- name: Assert Chrome paths are root-owned, real and not writable by others
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - not item.stat.islnk
+      - item.stat.pw_name == 'root'
+      - not item.stat.wgrp and not item.stat.woth
+      - item.item != agent_workstation__chrome or (item.stat.isreg and item.stat.executable)
+      - item.item == agent_workstation__chrome or item.stat.isdir
+    fail_msg: "Chrome must be executable and root-owned, without writable parents: {{ item.item }}"
+    quiet: true
+  loop: "{{ agent_workstation__chrome_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Find writable or foreign entries under Chrome
+  ansible.builtin.command:
+    argv: [find, "{{ agent_workstation_chrome_dir }}", -xdev, "(", -not, -user, root, -o, "(", "!", -type, l, -perm, /022, ")", ")", -print, -quit]
+  register: agent_workstation__chrome_unsafe
+  changed_when: false
+  check_mode: false
+  failed_when: agent_workstation__chrome_unsafe.rc != 0 or agent_workstation__chrome_unsafe.stdout | length > 0

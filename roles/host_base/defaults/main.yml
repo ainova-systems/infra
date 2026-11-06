@@ -1,0 +1,44 @@
+---
+# Named administrator account. Required: no default, the role asserts it.
+host_base_admin_user: ""
+# Public keys (type + body, no comment needed) authorized for the admin account. Required, non-empty.
+host_base_admin_keys: []
+# true: authorized_keys holds exactly host_base_admin_keys; a key removed here is removed on the host.
+host_base_admin_keys_exclusive: true
+host_base_admin_shell: /bin/bash
+# Passwordless sudo for the admin account. It has no password: SSH is key-only.
+host_base_admin_sudo_nopasswd: true
+
+# SSH, applied through devsec.hardening.ssh_hardening. Key-only, no root login.
+host_base_ssh_port: 22
+# Sources allowed to reach SSH through the firewall: "any" or CIDRs.
+host_base_ssh_allow_from:
+  - any
+# Accounts besides the admin allowed to log in over SSH.
+host_base_ssh_extra_users: []
+host_base_ssh_allow_tcp_forwarding: "no"
+host_base_ssh_allow_agent_forwarding: false
+
+# Firewall (ufw): default deny inbound, allow outbound, explicit allows below.
+# Each item: {port: 443, proto: tcp|udp, from: any|<CIDR>}. SSH is added from host_base_ssh_* above.
+host_base_firewall_allow: []
+# Allows to delete, same shape: ufw keeps a rule until it is removed explicitly.
+host_base_firewall_remove: []
+host_base_firewall_logging: low
+
+# Unattended security updates.
+host_base_auto_updates: true
+host_base_auto_reboot: false
+host_base_auto_reboot_time: "03:00"
+
+# Time sync through systemd-timesyncd. Empty list keeps the distribution servers.
+host_base_ntp_servers: []
+
+# The role refuses to change SSH and firewall on the machine running Ansible.
+# Set true only for a deliberate local run with console access as the fallback.
+host_base_allow_control_node: false
+
+# Supported platforms, asserted before any change.
+host_base_supported_os:
+  - distribution: Ubuntu
+    version: "24.04"

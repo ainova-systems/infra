@@ -1,0 +1,105 @@
+---
+# Apply: open cluster ports to listed peers only, then create or join the swarm once. A node already in a swarm
+# is asserted, never re-created, promoted, demoted or moved.
+
+- name: Validate the host and inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Install the Docker SDK for Python
+  ansible.builtin.apt:
+    name: "{{ swarm_node_python_docker_package }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Restrict cluster ports to listed peers
+  ansible.builtin.include_tasks: firewall.yml
+  when: swarm_node_firewall
+
+- name: Assert an existing membership matches the declaration
+  ansible.builtin.include_tasks: membership.yml
+  when: swarm_node__state == 'active'
+
+- name: Create or join the swarm
+  when: swarm_node__state == 'inactive'
+  block:
+    - name: Refuse to turn a daemon with running workloads into a swarm node
+      ansible.builtin.assert:
+        that:
+          - swarm_node__info.ContainersRunning | int == 0 or swarm_node_allow_existing_workloads
+        fail_msg: >-
+          This daemon runs {{ swarm_node__info.ContainersRunning }} containers. Creating or joining a swarm changes a
+          shared daemon; set swarm_node_allow_existing_workloads: true only after deciding that deliberately.
+        quiet: true
+
+    - name: Create a new swarm on this manager
+      community.docker.docker_swarm:
+        state: present
+        advertise_addr: "{{ swarm_node_advertise_addr }}"
+        listen_addr: "{{ swarm_node_advertise_addr }}:{{ swarm_node_listen_port }}"
+      # The module result carries the worker and manager join tokens.
+      no_log: true
+      when: swarm_node_init
+
+    - name: Join the swarm
+      when: not swarm_node_init
+      block:
+        - name: Assert manager addresses to join through
+          ansible.builtin.assert:
+            that:
+              - swarm_node_join_addrs | length > 0
+            fail_msg: Set swarm_node_join_addrs to join an existing swarm, or swarm_node_init true on the first manager.
+            quiet: true
+
+        - name: Prompt for the join token
+          ansible.builtin.pause:
+            prompt: >-
+              Swarm {{ swarm_node_role }} join token (input hidden; set {{ swarm_node_join_token_env }} on the
+              controller to skip this prompt)
+            echo: false
+          register: swarm_node__join_prompt
+          no_log: true
+          when:
+            - not ansible_check_mode
+            - swarm_node_token_prompt | bool
+            - swarm_node__join_token | length == 0
+
+        - name: Keep the prompted join token for this run only
+          ansible.builtin.set_fact:
+            swarm_node__prompted_join_token: "{{ swarm_node__join_prompt.user_input }}"
+          no_log: true
+          when: swarm_node__join_prompt is not skipped
+
+        - name: Assert a join token is available
+          ansible.builtin.assert:
+            that:
+              - swarm_node__has_token
+            fail_msg: >-
+              Pass the swarm's {{ swarm_node_role }} join token in {{ swarm_node_join_token_env }} or at the prompt
+              (`docker swarm join-token -q {{ swarm_node_role }}` on a manager).
+            quiet: true
+          vars:
+            swarm_node__has_token: "{{ swarm_node__join_token | length > 0 }}"
+          when: not ansible_check_mode
+
+        - name: Join the swarm as {{ swarm_node_role }}
+          community.docker.docker_swarm:
+            state: join
+            advertise_addr: "{{ swarm_node_advertise_addr }}"
+            listen_addr: "{{ swarm_node_advertise_addr }}:{{ swarm_node_listen_port }}"
+            remote_addrs: "{{ swarm_node_join_addrs }}"
+            join_token: "{{ swarm_node__join_token }}"
+          no_log: true
+          # Check mode without a token reports the join as pending instead of asking for a secret.
+          when: not ansible_check_mode or swarm_node__join_token | length > 0
+
+    - name: Re-read the Docker daemon
+      ansible.builtin.command:
+        argv: [docker, info, --format, json]
+      register: swarm_node__docker_info
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Assert the new membership matches the declaration
+      ansible.builtin.include_tasks: membership.yml
+      when: not ansible_check_mode

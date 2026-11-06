@@ -1,0 +1,38 @@
+---
+namespace: ainova
+name: infra
+version: 0.1.0
+readme: README.md
+authors:
+  - Ainova Systems
+description: >-
+  Provider-neutral roles for host baseline, container engine, self-hosted CI runners,
+  Compose and Swarm hosts, developer and agent workstations, and read-only host health.
+license:
+  - MIT
+tags:
+  - infrastructure
+  - security
+  - docker
+  - linux
+  - tools
+# Compatible ranges only; exact pins live in requirements.yml and in each consumer's own requirements.
+dependencies:
+  devsec.hardening: ">=11.0.0,<12.0.0"
+  community.docker: ">=5.4.0,<6.0.0"
+  community.general: ">=14.0.0,<15.0.0"
+  ansible.posix: ">=2.2.2,<3.0.0"
+  amazon.aws: ">=12.1.0,<13.0.0"
+repository: https://github.com/ainova-systems/infra-ansible
+documentation: https://github.com/ainova-systems/infra-ansible#readme
+issues: https://github.com/ainova-systems/infra-ansible/issues
+build_ignore:
+  - .tmp
+  - .ansible
+  - .git
+  - .gitattributes
+  - .gitignore
+  - .dockerignore
+  - container
+  - scripts
+  - "*.tar.gz"

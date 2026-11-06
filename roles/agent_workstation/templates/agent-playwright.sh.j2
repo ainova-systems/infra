@@ -1,0 +1,21 @@
+#!/bin/sh
+# Managed by the agent_workstation role; local edits are overwritten.
+# Account-local execution with a root-owned, lockfile-pinned Playwright API.
+export NODE_PATH="{{ agent_workstation__playwright_dir }}/node_modules${NODE_PATH:+:$NODE_PATH}"
+node={{ agent_workstation_node_executable | quote }}
+share={{ agent_workstation_share_dir | quote }}
+case "${1:-}" in
+  --help|-h) exec cat "$share/playwright.md" ;;
+  --version) exec "$node" -p 'require("playwright-core/package.json").version' ;;
+esac
+if [ "${1:-}" = --check ]; then
+  shift
+  [ "$#" -eq 0 ] || { echo 'Usage: agent-playwright --check' >&2; exit 2; }
+  exec "$node" "$share/playwright-smoke.cjs"
+fi
+if [ "${1:-}" = --check-url ]; then
+  shift
+  [ "$#" -eq 1 ] || { echo 'Usage: agent-playwright --check-url <http(s)-url>' >&2; exit 2; }
+  exec "$node" "$share/playwright-smoke.cjs" "$1"
+fi
+exec "$node" "$@"

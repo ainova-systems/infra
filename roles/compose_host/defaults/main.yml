@@ -1,0 +1,35 @@
+---
+# compose_host: a host ready for pipeline-driven Compose stacks. Prepares an unprivileged deploy account, one
+# directory per stack and a private env-file location. Deploys nothing: the pipeline owns stack deployment.
+
+# Deploy account the pipeline uses. Required; never root and never the admin account.
+compose_host_deploy_user: ""
+
+# Public keys (one string each, "<type> <body>", no comment needed) allowed to log in as the deploy account.
+# Managed exclusively: keys not listed are removed. Empty: no SSH login for the account.
+compose_host_deploy_keys: []
+
+# Add the deploy account to the docker group. On a rootful daemon this is root-equivalent on the host;
+# enable it only where the pipeline must drive the daemon through this account.
+compose_host_deploy_docker_access: false
+
+# Parent of the stack directories (root-owned 0755).
+compose_host_root: /srv/stacks
+
+# Stack names, lowercase [a-z0-9-]. Each gets <root>/<name> (deploy account, 0750) and
+# <root>/<name>/<private dir> (0700) for its env file. Removing a name from the list leaves its directory in place.
+compose_host_stack_dirs: []
+
+# Private directory and env-file name inside each stack directory. The pipeline writes the file; the role only
+# keeps an existing one 0600 and owned by the deploy account. It never creates or reads its content.
+compose_host_private_dir: private
+compose_host_env_file: .env
+
+# Home directory of the deploy account.
+compose_host_deploy_home: "/home/{{ compose_host_deploy_user }}"
+
+# Login shell for the deploy account.
+compose_host_deploy_shell: /bin/bash
+
+# Groups the deploy account must never hold.
+compose_host_forbidden_groups: [sudo, admin, wheel, root, adm, lxd]

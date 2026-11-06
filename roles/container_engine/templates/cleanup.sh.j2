@@ -1,0 +1,55 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Prunes unused data of ONE explicitly selected local daemon (DOCKER_HOST). Preview by default.
+# Named volumes are never pruned; anything labelled {{ container_engine__cleanup.keep_label }} is kept.
+set -eu
+[ "$#" -le 1 ] || { echo 'Too many arguments' >&2; exit 2; }
+mode=${1:---plan}
+case "$mode" in --plan|--apply) ;; *) echo 'Usage: container-engine-cleanup [--plan|--apply]' >&2; exit 2 ;; esac
+uid=$(id -u)
+case "${DOCKER_HOST:-}" in
+  unix:///var/run/docker.sock) [ "$uid" = 0 ] || { echo 'The rootful daemon is cleaned by root only' >&2; exit 1; }; lock=/run/lock/container-engine-cleanup.lock ;;
+  "unix:///run/user/$uid/docker.sock") lock="/run/user/$uid/container-engine-cleanup.lock" ;;
+  *) echo 'An explicit local Docker socket is required' >&2; exit 1 ;;
+esac
+docker info >/dev/null
+run() {
+  if [ "$mode" = --apply ]; then "$@"; else printf 'Would run:'; printf ' %s' "$@"; printf '\n'; fi
+}
+if [ "$mode" = --apply ]; then
+  exec 9>"$lock"
+  flock -n -E 75 9 || {
+    status=$?
+    if [ "$status" = 75 ]; then echo 'Cleanup already running'; exit 0; fi
+    exit "$status"
+  }
+fi
+until={{ container_engine__cleanup.prune_until | quote }}
+keep={{ container_engine__cleanup.keep_label | quote }}
+# Stopped containers of protected services keep their configuration.
+run docker container prune -f --filter "until=$until" --filter "label!=$keep"{% for label in container_engine__cleanup.protected_container_labels %} --filter {{ ('label!=' ~ label) | quote }}{% endfor %}
+
+run docker image prune -a -f --filter "until=$until" --filter "label!=$keep"
+run docker network prune -f --filter "until=$until" --filter "label!=$keep"
+# No --all: only unused anonymous volumes. Named application and runner data stays.
+run docker volume prune -f --filter "label!=$keep"
+if docker buildx version >/dev/null 2>&1; then
+  run docker buildx prune --builder default -f --filter "until=$until" --reserved-space {{ container_engine__cleanup.build_cache_reserved | quote }}
+else
+  run docker builder prune -f --filter "until=$until"
+fi
+# docker system df does not count the cache inside docker-container builders.
+{% raw %}
+builders=$(docker ps --filter name=buildx_buildkit_ --format '{{.ID}} {{.Names}}')
+{% endraw %}
+printf '%s\n' "$builders" | while read -r container name; do
+  case "$name" in buildx_buildkit_*)
+{% raw %}
+    label=$(docker inspect --format '{{json .Config.Labels}}' "$container")
+{% endraw %}
+    case "$label" in *"\"${keep%%=*}\":\"${keep#*=}\""*) continue ;; esac
+    run docker exec "$container" buildctl prune --keep-duration "$until" --keep-storage {{ container_engine__cleanup.buildkit_keep_storage_mb | int }}
+    ;;
+  esac
+done
+echo 'Container engine cleanup completed'

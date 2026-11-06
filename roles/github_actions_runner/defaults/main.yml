@@ -1,0 +1,72 @@
+---
+# github_actions_runner: self-hosted GitHub Actions runners, one Compose project per instance,
+# on a rootful Docker daemon. Registration happens once per data volume; no token is ever stored.
+
+# Registration scope: a repository (https://<forge-host>/<owner>/<repo>) or an organization
+# (https://<forge-host>/<org>). Required.
+github_actions_runner_scope_url: ""
+
+# Organization runner group to register into. Empty: the forge default group.
+github_actions_runner_group: ""
+
+# Runner image pinned by digest: <registry>/<repo>:<tag>@sha256:<64 hex> (tag optional). Required.
+# The image must meet the contract in the README ("Image contract").
+github_actions_runner_image: ""
+
+# Instances on this host. Keys:
+#   name        runner and container name, lowercase [a-z0-9-], unique per registration scope (required)
+#   labels      list of custom labels; the runner adds self-hosted, OS and architecture itself (required)
+#   cpus        CPU limit, number > 0 (required)
+#   memory      memory limit in MiB, integer >= 1024; swap is disabled (required)
+#   state       present (registered and running) | stopped (registered, container stopped) | absent
+#   volume      data volume name holding the registration and work directory (default <name>-data)
+#   adopt       true: accept an existing volume this role did not create (migration); default false
+#   deregister  on state absent, remove the forge registration first; default true
+#   purge       on state absent, also delete the data volume and definition; default false
+#   - name: build-runner-01
+#     labels: [build]
+#     cpus: 4
+#     memory: 8192
+github_actions_runner_instances: []
+
+# Labels appended to every instance, for example one per-host routing label.
+github_actions_runner_common_labels: []
+
+# Root-owned directory holding one Compose definition per instance (0700 directory, 0600 file).
+github_actions_runner_base_dir: /etc/github-actions-runner
+
+# Rootful daemon socket mounted into every runner. The socket group is read on the host, never assumed.
+github_actions_runner_docker_socket: /var/run/docker.sock
+
+# Runner directory inside the image; the data volume is mounted here and keeps .runner/.credentials.
+github_actions_runner_data_path: /home/runner/actions-runner
+
+# Environment variable names the image entrypoint reads (informational once registered).
+github_actions_runner_identity_env:
+  url: GITHUB_REPOSITORY_URL
+  name: RUNNER_NAME
+  labels: RUNNER_LABELS
+
+# Additional non-secret container environment. Keys naming a token, secret, password or key are refused.
+github_actions_runner_extra_env: {}
+
+# Host memory (MiB) kept free when every runner peaks at once.
+github_actions_runner_memory_reserve_mb: 4096
+
+# Controller environment variables carrying short-lived forge tokens at run time. Never set them in files.
+github_actions_runner_registration_token_env: GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN
+github_actions_runner_removal_token_env: GITHUB_ACTIONS_RUNNER_REMOVAL_TOKEN
+
+# Prompt (hidden input) when a needed token variable is empty. false: fail instead.
+github_actions_runner_token_prompt: true
+
+# Take over an existing forge registration with the same name (config.sh --replace).
+# Default false: a live registration under the name stops the run.
+github_actions_runner_replace_registration: false
+
+# Container log rotation.
+github_actions_runner_log_max_size: 10m
+github_actions_runner_log_max_file: 3
+
+# Seconds to wait for a started runner container to report running.
+github_actions_runner_wait_timeout: 60

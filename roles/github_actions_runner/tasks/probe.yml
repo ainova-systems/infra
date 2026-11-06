@@ -1,0 +1,91 @@
+---
+# Read-only probe of one instance (loop_var github_actions_runner_instance). Shared by apply and check.
+
+- name: Read the definition of {{ github_actions_runner__name }}
+  ansible.builtin.stat:
+    path: "{{ github_actions_runner__definition }}"
+  register: github_actions_runner__definition_stat
+
+- name: Read the data volume of {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv: [docker, volume, inspect, --, "{{ github_actions_runner__volume }}"]
+  register: github_actions_runner__volume_info
+  changed_when: false
+  failed_when: github_actions_runner__volume_info.rc != 0 and 'no such volume' not in (github_actions_runner__volume_info.stderr | lower)
+  check_mode: false
+
+- name: Read the stored runner configuration of {{ github_actions_runner__name }}
+  ansible.builtin.stat:
+    path: "{{ github_actions_runner__mountpoint }}/.runner"
+    get_checksum: false
+  register: github_actions_runner__runner_file
+  when: github_actions_runner__volume_exists
+
+- name: Read the stored runner credentials of {{ github_actions_runner__name }}
+  ansible.builtin.stat:
+    path: "{{ github_actions_runner__mountpoint }}/.credentials"
+    get_checksum: false
+  register: github_actions_runner__credentials_file
+  when: github_actions_runner__volume_exists
+
+# .runner holds the registration identity only (name, pool, forge URL); .credentials is never read.
+- name: Read the registration identity of {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv: [cat, --, "{{ github_actions_runner__mountpoint }}/.runner"]
+  register: github_actions_runner__runner_identity
+  changed_when: false
+  check_mode: false
+  when: github_actions_runner__registered
+
+- name: Assert no partial registration is stored for {{ github_actions_runner__name }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        (github_actions_runner__runner_file.stat.exists | default(false))
+        == (github_actions_runner__credentials_file.stat.exists | default(false))
+    fail_msg: >-
+      Volume {{ github_actions_runner__volume }} holds a partial registration (.runner without .credentials or the
+      reverse). Remove the forge registration, then set state absent with purge: true and apply again.
+    quiet: true
+  # Removal with purge is the way out of a partial registration, so it is not blocked here.
+  when: github_actions_runner__state != 'absent'
+
+- name: Assert a stored registration belongs to this instance and scope
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner__runner_identity.stdout is search('"agentName"[ ]*:[ ]*"' ~ github_actions_runner__name ~ '"')
+      - github_actions_runner__runner_identity.stdout is search('"gitHubUrl"[ ]*:[ ]*"' ~ (github_actions_runner_scope_url | regex_escape) ~ '/?"')
+    fail_msg: >-
+      Volume {{ github_actions_runner__volume }} holds a registration for another runner name or scope.
+      Choose the right volume, or deregister and purge it explicitly; the role never reuses another registration.
+    quiet: true
+  when: github_actions_runner__registered
+
+- name: Read the container of {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv: [docker, container, inspect, --, "{{ github_actions_runner__name }}"]
+  register: github_actions_runner__container_info
+  changed_when: false
+  failed_when: github_actions_runner__container_info.rc != 0 and 'no such' not in (github_actions_runner__container_info.stderr | lower)
+  check_mode: false
+
+- name: Read the processes of {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv: [docker, top, "{{ github_actions_runner__name }}", -eo, "pid,args"]
+  register: github_actions_runner__processes
+  changed_when: false
+  check_mode: false
+  when: github_actions_runner__running
+
+- name: Assert the container name and volume are owned by this role
+  ansible.builtin.assert:
+    that:
+      - not github_actions_runner__container_exists or github_actions_runner__managed
+      - >-
+        github_actions_runner__definition_stat.stat.exists or github_actions_runner__adopt
+        or not github_actions_runner__volume_exists
+    fail_msg: >-
+      {{ github_actions_runner__name }}: a container of that name not created by this role exists, or volume
+      {{ github_actions_runner__volume }} exists without a definition. Remove the foreign container (keep its volume),
+      and set adopt: true on the instance to take an existing volume over deliberately.
+    quiet: true

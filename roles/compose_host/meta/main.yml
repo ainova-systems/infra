@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: compose_host
+  namespace: ainova
+  author: Ainova Systems
+  description: >-
+    Prepares a host for pipeline-driven Compose stacks - unprivileged deploy account, stack directories
+    and private env-file locations; deploys nothing
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags: [docker, compose, deployment]
+# Needs a Docker Engine for the pipeline to deploy to: apply container_engine first.
+dependencies: []
