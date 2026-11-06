@@ -49,3 +49,28 @@ agent_workstation__herdr_runtime_tools:
 
 # agent-auth verbs; a scope may not use these names.
 agent_workstation__reserved_scopes: [check, list, remove, help, credential]
+
+# Credential scope keys an entry may carry; anything else is rejected. Same contract as dev_workstation.
+agent_workstation__scope_keys: [name, url, kind, username, validate_url]
+
+# Credential scopes per account name, with kind and username resolved exactly as dev_workstation does:
+# kind defaults to github for a github.com URL and to generic otherwise; a github scope defaults its
+# username to x-access-token, a generic scope has none (empty, which the assert refuses).
+agent_workstation__scopes: >-
+  {%- set out = {} -%}
+  {%- for account in agent_workstation_accounts if account is mapping -%}
+  {%-   set entries = [] -%}
+  {%-   for scope in account.credential_scopes | default(agent_workstation_default_credential_scopes) if scope is mapping -%}
+  {%-     set host = scope.url | default('') | string | regex_replace('^https://([^/]*).*$', '\\1') | lower -%}
+  {%-     set kind = scope.kind | default('github' if host == 'github.com' else 'generic') -%}
+  {%-     set entry = {
+            'name': scope.name | default(''),
+            'url': scope.url | default(''),
+            'kind': kind,
+            'username': scope.username | default('x-access-token' if kind == 'github' else '')} -%}
+  {%-     if scope.validate_url is defined -%}{%- set _ = entry.update({'validate_url': scope.validate_url}) -%}{%- endif -%}
+  {%-     set _ = entries.append(entry) -%}
+  {%-   endfor -%}
+  {%-   set _ = out.update({account.name | default(''): entries}) -%}
+  {%- endfor -%}
+  {{ out }}

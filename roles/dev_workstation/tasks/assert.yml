@@ -5,10 +5,10 @@
   ansible.builtin.assert:
     that:
       - ansible_facts['distribution'] == 'Ubuntu'
-      - ansible_facts['distribution_version'] == '24.04'
+      - ansible_facts['distribution_version'] in ['26.04', '24.04']
       - ansible_facts['architecture'] == 'x86_64'
       - ansible_facts['service_mgr'] == 'systemd'
-    fail_msg: dev_workstation supports Ubuntu 24.04 on x86_64 with systemd only.
+    fail_msg: dev_workstation supports Ubuntu 26.04 and 24.04 on x86_64 with systemd only.
     quiet: true
 
 - name: Assert pinned versions are exact
@@ -74,19 +74,28 @@
 - name: Assert every credential scope
   vars:
     dev_workstation_scopes: "{{ dev_workstation_account.credential_scopes | default(dev_workstation_default_credential_scopes) }}"
+    dev_workstation_resolved: "{{ dev_workstation__scopes[dev_workstation_account.name] | default([]) }}"
   ansible.builtin.assert:
     that:
       - dev_workstation_scopes | type_debug == 'list'
       - dev_workstation_scopes | length > 0
       - dev_workstation_scopes | select('mapping') | list | length == dev_workstation_scopes | length
-      - dev_workstation_scopes | map('list') | flatten | unique | difference(['name', 'url']) | length == 0
-      - dev_workstation_scopes | map(attribute='name') | reject('match', '^[a-z0-9][a-z0-9-]{0,31}$') | list | length == 0
-      - dev_workstation_scopes | map(attribute='url') | reject('match', '^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~-]+)*$') | list | length == 0
+      - dev_workstation_scopes | map('list') | flatten | unique | difference(dev_workstation__scope_keys) | length == 0
+      - dev_workstation_scopes | map(attribute='name', default='') | reject('match', '^[a-z0-9][a-z0-9-]{0,31}$') | list | length == 0
+      - dev_workstation_scopes | map(attribute='url', default='') | reject('match', '^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~-]+)*$') | list | length == 0
       - dev_workstation_scopes | map(attribute='name') | unique | list | length == dev_workstation_scopes | length
       - dev_workstation_scopes | map(attribute='url') | unique | list | length == dev_workstation_scopes | length
+      - >-
+        dev_workstation_scopes | selectattr('validate_url', 'defined') | map(attribute='validate_url') | map('string')
+        | reject('match', '^https://[^\s]+$') | list | length == 0
+      - dev_workstation_resolved | length == dev_workstation_scopes | length
+      - dev_workstation_resolved | map(attribute='kind') | map('string') | reject('in', ['github', 'generic']) | list | length == 0
+      - dev_workstation_resolved | map(attribute='username') | map('string') | reject('match', '^[A-Za-z0-9._@+][A-Za-z0-9._@+-]{0,127}$') | list | length == 0
     fail_msg: >-
-      Credential scopes for {{ dev_workstation_account.name }} must be unique {name, url} pairs: name in
-      lowercase kebab-case, url an https prefix without user info, query or trailing slash.
+      Credential scopes for {{ dev_workstation_account.name }} must be unique {name, url} pairs with optional
+      kind (github|generic), username and validate_url, and no other key: name in lowercase kebab-case, url an
+      https prefix without user info, query or trailing slash. A generic scope (any host but github.com unless
+      kind is github) needs a username, e.g. x-token-auth for a Bitbucket access token.
     quiet: true
   loop: "{{ dev_workstation_accounts }}"
   loop_control:

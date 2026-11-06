@@ -11,7 +11,7 @@ limits, guards) is plain Docker.
 
 | Requirement | Source |
 |---|---|
-| Ubuntu 24.04, x86_64, systemd | asserted |
+| Ubuntu 26.04 (default) or 24.04, x86_64, systemd | asserted |
 | Rootful Docker Engine, Compose plugin >= 2.18, root-owned socket | `container_engine` with `container_engine_mode: rootful`; asserted |
 | `community.docker` collection | collection `requirements.yml` |
 | `become: true`, gathered facts | the calling play |

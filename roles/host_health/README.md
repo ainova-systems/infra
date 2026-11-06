@@ -4,7 +4,7 @@ Read-only health floor for any host: uptime, available memory, free disk, failed
 container engine up, and optionally the age of the newest backup object under an S3-compatible prefix.
 It changes nothing; `main` and `check` run the same probes.
 
-Supported: Ubuntu 24.04 (`meta/main.yml`, asserted first). Requires `become: true` for the rootless probes.
+Supported: Ubuntu 26.04 (default for new hosts) or 24.04 (`meta/main.yml`, asserted first). Requires `become: true` for the rootless probes.
 The backup control runs on the control node and needs `boto3`/`botocore` there (the control container has them).
 
 ## Entry points
@@ -27,7 +27,7 @@ The backup control runs on the control node and needs `boto3`/`botocore` there (
 | `host_health_container_engine_rootless_accounts` | `container_engine_rootless_accounts` or `[]` | Accounts whose rootless daemon must answer `docker version`. |
 | `host_health_backup` | `{}` | Omitted skips the control. Keys: `endpoint_url`, `bucket`, `prefix`, `max_age_hours`, `access_key_env`, `secret_key_env`, optional `region` (default `us-east-1`). |
 | `host_health_backup_inspect_keys` | `3` | Newest-by-name keys whose modification time is read. |
-| `host_health_supported_os` | Ubuntu 24.04 | Platforms the role asserts. |
+| `host_health_supported_os` | Ubuntu 26.04, 24.04 | Platforms the role asserts. |
 
 ## Backup freshness
 

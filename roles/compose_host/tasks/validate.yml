@@ -5,10 +5,10 @@
   ansible.builtin.assert:
     that:
       - ansible_facts['distribution'] == 'Ubuntu'
-      - ansible_facts['distribution_version'] == '24.04'
+      - ansible_facts['distribution_version'] in ['26.04', '24.04']
       - ansible_facts['architecture'] == 'x86_64'
       - ansible_facts['service_mgr'] == 'systemd'
-    fail_msg: compose_host supports Ubuntu 24.04 on x86_64 with systemd only.
+    fail_msg: compose_host supports Ubuntu 26.04 and 24.04 on x86_64 with systemd only.
     quiet: true
 
 - name: Assert compose_host inputs

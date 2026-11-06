@@ -9,7 +9,7 @@ re-created, promoted, demoted or moved. The role deploys no stack.
 
 | Requirement | Source |
 |---|---|
-| Ubuntu 24.04, x86_64, systemd | asserted |
+| Ubuntu 26.04 (default) or 24.04, x86_64, systemd | asserted |
 | Rootful Docker Engine (Swarm mode does not run rootless) | `container_engine` with `container_engine_mode: rootful`; asserted |
 | Active ufw with default-deny inbound | `host_base`; asserted |
 | `community.docker`, `community.general` | collection `requirements.yml` |
@@ -32,7 +32,8 @@ re-created, promoted, demoted or moved. The role deploys no stack.
 | `swarm_node_firewall` | `true` | Manage the ufw rules; `false` leaves them to another owner (check still refuses broad rules) |
 | `swarm_node_overlay_encryption` | `true` | Allow ESP from peers for encrypted overlay networks |
 | `swarm_node_allow_existing_workloads` | `false` | Permit creating or joining on a daemon with running containers |
-| `swarm_node_python_docker_package` | `python3-docker=5.0.3*` | Docker SDK package for `docker_swarm` |
+| `swarm_node_python_docker_packages` | `26.04: python3-docker=7.1.0*`, `24.04: python3-docker=5.0.3*` | Docker SDK package per release; a release without an entry stops the run |
+| `swarm_node_python_docker_package` | entry for the running release | Docker SDK package for `docker_swarm`; override to pin another build |
 
 ```yaml
 # Single-node swarm: no peers, no cluster port opened.

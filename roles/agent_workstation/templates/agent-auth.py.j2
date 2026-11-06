@@ -2,10 +2,13 @@
 # Managed by the agent_workstation role; local edits are overwritten.
 """agent-auth: store a forge token for one credential scope of the current coding account.
 
-The token is typed at a hidden prompt, validated, and written to
-~/.config/git-credentials/<scope>.env (mode 0600) as GH_TOKEN=<token>; the Git credential helper
-for that scope reads it from there. Tokens are never accepted as arguments, never echoed and
-never logged. Run inside the coding account, never as root.
+The token is typed at a hidden prompt, validated where the scope has an endpoint, and written to
+~/.config/git-credentials/<scope>.env (mode 0600) as TOKEN=<token>; the Git credential helper for
+that scope reads it from there and sends it with the scope's username. A github scope is validated
+against the GitHub API; a generic scope (any other forge) is stored without an API call unless it
+declares validate_url. A legacy GH_TOKEN=<token> file of a github scope is still read. Tokens are
+never accepted as arguments, never echoed and never logged. Run inside the coding account, never
+as root.
 """
 import getpass
 import json
@@ -22,10 +25,14 @@ import urllib.request
 
 CONFIG = Path({{ (agent_workstation_config_dir ~ '/credential-scopes.json') | to_json }})
 STORE = '.config/git-credentials'
-KEY = 'GH_TOKEN'
+KEY = 'TOKEN'
+# Written before 0.2.0; accepted for github scopes only, never together with KEY.
+LEGACY_KEY = 'GH_TOKEN'
+SCOPE_KEYS = {'name', 'url', 'kind', 'username', 'validate_url'}
+KINDS = ('github', 'generic')
 VERBS = ('check', 'list', 'remove', 'help')
 USAGE = """Usage:
-  agent-auth [SCOPE]          prompt for a token (hidden), validate it, store it for SCOPE
+  agent-auth [SCOPE]          prompt for a token (hidden), validate it where the scope can be, store it
   agent-auth check [SCOPE]    check stored credentials (all scopes when SCOPE is omitted)
   agent-auth list             list configured scopes and whether a credential is stored
   agent-auth remove SCOPE     delete the stored credential of SCOPE
@@ -48,10 +55,17 @@ def scopes():
         raise Failure('No credential scopes are configured for this account.') from None
     result = {}
     for entry in configured:
+        if not isinstance(entry, dict) or not set(entry) <= SCOPE_KEYS:
+            raise Failure('Invalid scope configuration.')
         name, url = entry.get('name'), entry.get('url')
         if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]*', name) or name in VERBS:
             raise Failure('Invalid scope configuration.')
         if not isinstance(url, str) or not url.startswith('https://'):
+            raise Failure('Invalid scope configuration.')
+        if entry.get('kind') not in KINDS:
+            raise Failure('Invalid scope configuration.')
+        username = entry.get('username')
+        if not isinstance(username, str) or not re.fullmatch(r'[A-Za-z0-9._@+][A-Za-z0-9._@+-]*', username):
             raise Failure('Invalid scope configuration.')
         result[name] = entry
     if not result:
@@ -95,20 +109,24 @@ def credential_path(scope):
     return Path.home() / STORE / (scope + '.env')
 
 
-def read_token(scope):
+def read_token(scope, entry):
+    """The stored token, or None. One TOKEN line; a github scope may hold one legacy GH_TOKEN line instead."""
     path = credential_path(scope)
     safe_path(path, secret=True)
     if not path.exists():
         return None
+    accepted = (KEY, LEGACY_KEY) if entry['kind'] == 'github' else (KEY,)
     values = {}
     for line in path.read_text().splitlines():
         if not line or line.startswith('#'):
             continue
         key, sep, value = line.partition('=')
-        if not sep or key != KEY or key in values or not value:
+        if not sep or key not in accepted or key in values or not value:
             raise Failure('Invalid credential file; remove it and store the token again.')
         values[key] = value
-    return values.get(KEY)
+    if len(values) > 1:
+        raise Failure('Credential file holds both TOKEN and GH_TOKEN; remove it and store the token again.')
+    return next(iter(values.values()), None)
 
 
 def write_token(scope, token):
@@ -132,11 +150,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def validation_url(entry):
+    """The scope's declared endpoint; for a github scope the GitHub API of its host; otherwise none."""
     if entry.get('validate_url'):
         return entry['validate_url']
-    if urllib.parse.urlsplit(entry['url']).hostname == 'github.com':
+    if entry['kind'] != 'github':
+        return None
+    host = urllib.parse.urlsplit(entry['url']).hostname
+    if host == 'github.com':
         return 'https://api.github.com/user'
-    return None
+    return 'https://' + host + '/api/v3/user'
 
 
 def validate(entry, token):
@@ -146,9 +168,10 @@ def validate(entry, token):
         return None
     if not url.startswith('https://'):
         raise Failure('Validation endpoint must use HTTPS.')
+    accept = 'application/vnd.github+json' if entry['kind'] == 'github' else 'application/json'
     request = urllib.request.Request(url, headers={
         'Authorization': 'Bearer ' + token,
-        'Accept': 'application/vnd.github+json',
+        'Accept': accept,
         'User-Agent': 'agent-auth'})
     try:
         with urllib.request.build_opener(NoRedirect).open(request, timeout=20):
@@ -166,7 +189,7 @@ def login(configured, name):
         raise Failure('A token is typed at an interactive terminal; it is never piped or passed as an argument.')
     entry = configured[scope]
     safe_path(credential_path(scope), secret=True)
-    print(f'Scope {scope}: {entry["url"]}')
+    print(f'Scope {scope} ({entry["kind"]}, username {entry["username"]}): {entry["url"]}')
     token = getpass.getpass('Token (hidden): ')
     if not token or len(token) > 4096 or not re.fullmatch(r'[!-~]+', token):
         raise Failure('Invalid token input.')
@@ -175,14 +198,14 @@ def login(configured, name):
     if accepted:
         print(f'PASS {scope}: token accepted and stored with mode 0600.')
     else:
-        print(f'STORED {scope}: no validation endpoint for this scope; Git use will confirm it.')
+        print(f'STORED {scope}: no validation endpoint for this scope; confirm with git ls-remote <repository-url>.')
 
 
 def check(configured, name):
     failed = False
     for scope in [select(configured, name)] if name else sorted(configured):
         try:
-            token = read_token(scope)
+            token = read_token(scope, configured[scope])
             if token is None:
                 print(f'AUTH_REQUIRED {scope}: run agent-auth {scope} inside this account.')
                 continue
@@ -199,7 +222,8 @@ def listing(configured):
     for scope in sorted(configured):
         path = credential_path(scope)
         safe_path(path, secret=True)
-        print(f'{scope}\t{configured[scope]["url"]}\t{"stored" if path.exists() else "missing"}')
+        entry = configured[scope]
+        print(f'{scope}\t{entry["kind"]}\t{entry["username"]}\t{entry["url"]}\t{"stored" if path.exists() else "missing"}')
 
 
 def remove(configured, name):

@@ -27,7 +27,7 @@
   block:
     - name: Preflight credential paths of {{ dev_workstation_account.name }}
       ansible.builtin.command:
-        argv: ["{{ dev_workstation_libexec_dir }}/credential-preflight", "{{ dev_workstation_managed_gitconfig }}"]
+        argv: "{{ [dev_workstation_libexec_dir ~ '/credential-preflight', dev_workstation_managed_gitconfig] + dev_workstation__generic_scopes }}"
         chdir: /
       changed_when: false
       check_mode: false
@@ -83,7 +83,7 @@
 
     - name: Re-run the credential preflight of {{ dev_workstation_account.name }}
       ansible.builtin.command:
-        argv: ["{{ dev_workstation_libexec_dir }}/credential-preflight", "{{ dev_workstation_managed_gitconfig }}"]
+        argv: "{{ [dev_workstation_libexec_dir ~ '/credential-preflight', dev_workstation_managed_gitconfig] + dev_workstation__generic_scopes }}"
         chdir: /
       changed_when: false
       check_mode: false

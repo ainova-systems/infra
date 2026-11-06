@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
+### Added
+
+- Ubuntu 26.04 LTS support in every role; it is the default for new hosts, and 24.04 LTS stays supported.
+- `host_base_releases`: per-release sudo provider and time daemon (26.04 `sudo-rs` and `chrony`, 24.04 `sudo` and `systemd-timesyncd`); a release without an entry stops the run.
+- `swarm_node_python_docker_packages`: per-release `python3-docker` pin (26.04 `7.1.0`, 24.04 `5.0.3`).
+- `container_engine` stops rootless mode early when unprivileged user namespaces are restricted and the distribution `rootlesskit` AppArmor profile is missing.
+- Credential scopes work on any HTTPS forge: optional `kind` (`github` or `generic`) and `username` per scope, shared by `dev_workstation` and `agent_workstation`.
+- Repository rulesets in `.github/rulesets/` protecting `main` and the `v*` release tags.
+
+### Changed
+
+- Token files hold `TOKEN=<token>`; `GH_TOKEN=<token>` files from 0.1.0 still work for `github` scopes, and a file holding both is refused.
+- The Git credential helper sends the scope's username (`x-access-token` by default for `github` scopes).
+- `agent-auth` validates `github` scopes against the GitHub API (also on GitHub Enterprise hosts) and stores `generic` scopes without an API call unless they declare `validate_url`.
+- `agent-auth list` prints each scope's kind and username.
+- `dev_workstation` accepts `validate_url` in a scope so both roles take the same list; scope entries with any other unknown key are refused by both roles.
+- `host_base_ntp_servers` with `chrony` adds servers beside the distribution's NTS pools.
+
 ## [0.1.0] - 2026-11-06
 
 First release: the `ainova.infra` collection.

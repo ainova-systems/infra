@@ -5,10 +5,10 @@
   ansible.builtin.assert:
     that:
       - ansible_facts['distribution'] == 'Ubuntu'
-      - ansible_facts['distribution_version'] == '24.04'
+      - ansible_facts['distribution_version'] in ['26.04', '24.04']
       - ansible_facts['architecture'] == 'x86_64'
       - ansible_facts['service_mgr'] == 'systemd'
-    fail_msg: swarm_node supports Ubuntu 24.04 on x86_64 with systemd only.
+    fail_msg: swarm_node supports Ubuntu 26.04 and 24.04 on x86_64 with systemd only.
     quiet: true
 
 - name: Assert an explicit node role
@@ -42,9 +42,11 @@
       - swarm_node_overlay_encryption is boolean
       - swarm_node_allow_existing_workloads is boolean
       - swarm_node_join_token_env is match('^[A-Z][A-Z0-9_]*$')
+      - swarm_node_python_docker_package is match('^python3-docker=[0-9][0-9A-Za-z.+~:-]*[*]?$')
     fail_msg: >-
       Set swarm_node_advertise_addr (a routable IP or interface name), peers as single addresses or CIDRs (never
-      any or /0), and well-formed join addresses. Values come from the project's environment, not this repository.
+      any or /0), well-formed join addresses, and a pinned python3-docker for this release
+      (swarm_node_python_docker_packages). Values come from the project's environment, not this repository.
     quiet: true
 
 - name: Read the Docker daemon

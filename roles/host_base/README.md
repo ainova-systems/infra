@@ -2,16 +2,17 @@
 
 Baseline every host gets first: a named admin account with authorized public keys, key-only SSH through
 `devsec.hardening.ssh_hardening`, a `ufw` firewall that denies inbound by default with explicit allows,
-unattended security updates and time sync through `systemd-timesyncd`.
+unattended security updates and time sync through the release's daemon (`chrony` on 26.04,
+`systemd-timesyncd` on 24.04).
 
-Supported: Ubuntu 24.04 (`meta/main.yml`, asserted before any change). Requires `become: true`.
+Supported: Ubuntu 26.04 (default for new hosts) or 24.04 (`meta/main.yml`, asserted before any change). Requires `become: true`.
 
 ## Entry points
 
 | Tasks | Effect |
 |---|---|
 | `main` | Applies the baseline. Idempotent; asserts inputs and platform first. |
-| `check` | Read-only. Probes account, keys, sudoers, `sshd -T`, `ufw status`, APT periodic settings and `timedatectl`; one assert lists every failed control. |
+| `check` | Read-only. Probes account, keys, sudoers, `sshd -T`, `ufw status`, APT periodic settings, the time daemon and `timedatectl`; one assert lists every failed control. |
 
 ## Variables
 
@@ -33,9 +34,10 @@ Supported: Ubuntu 24.04 (`meta/main.yml`, asserted before any change). Requires 
 | `host_base_auto_updates` | `true` | Security-origin unattended upgrades. |
 | `host_base_auto_reboot` | `false` | Reboot automatically when an update needs it. |
 | `host_base_auto_reboot_time` | `"03:00"` | Reboot time when enabled. |
-| `host_base_ntp_servers` | `[]` | Time servers; empty keeps the distribution defaults. |
+| `host_base_ntp_servers` | `[]` | Time servers; empty keeps the distribution defaults. `systemd-timesyncd`: they replace the distribution servers. `chrony`: they are added in `/etc/chrony/sources.d/host-base.sources` beside the distribution's NTS pools. |
 | `host_base_allow_control_node` | `false` | Allow applying to the machine running Ansible. |
-| `host_base_supported_os` | Ubuntu 24.04 | Platforms the role asserts. |
+| `host_base_supported_os` | Ubuntu 26.04, 24.04 | Platforms the role asserts. |
+| `host_base_releases` | 26.04: `sudo-rs`, `chrony`; 24.04: `sudo`, `systemd-timesyncd` | Per release `{sudo, time_daemon}`; a supported release without an entry stops the run. |
 
 Other `ssh_*` variables of `ssh_hardening` may be set in inventory; the ones listed above are passed by
 this role and win.
@@ -50,8 +52,11 @@ this role and win.
   and firewall changes are applied from another machine.
 - `ufw` keeps a rule until it is deleted; retire an allow through `host_base_firewall_remove`, then drop it
   from both lists once applied.
-- Time sync assumes `systemd-timesyncd`; installing it replaces another NTP daemon, so review a host that
-  runs one before the first apply.
+- Time sync uses the release's daemon from `host_base_releases`. Another time daemon installed (for example
+  `systemd-timesyncd` kept on a host upgraded from 24.04 to 26.04) stops the run: installing the declared one
+  replaces it, so remove it deliberately or declare it for that release.
+- On 26.04, `sudo` is `sudo-rs` (the distribution default); `/usr/sbin/visudo` is its alternative and validates
+  the sudoers drop-in.
 
 ## Example
 

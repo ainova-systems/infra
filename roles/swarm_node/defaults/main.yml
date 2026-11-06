@@ -42,5 +42,10 @@ swarm_node_overlay_encryption: true
 # is never turned into a swarm node by accident.
 swarm_node_allow_existing_workloads: false
 
-# Docker SDK for Python, used by community.docker.docker_swarm (distribution package, pinned version).
-swarm_node_python_docker_package: python3-docker=5.0.3*
+# Docker SDK for Python, used by community.docker.docker_swarm: the distribution package, pinned per release
+# (keyed by ansible_facts.distribution_version). A release without an entry stops the run.
+swarm_node_python_docker_packages:
+  "26.04": python3-docker=7.1.0*
+  "24.04": python3-docker=5.0.3*
+# The package spec installed on this host. Override to pin a different build; empty stops the run.
+swarm_node_python_docker_package: "{{ swarm_node_python_docker_packages[ansible_facts['distribution_version']] | default('') }}"

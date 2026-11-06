@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Added beside the distribution's NTS pools; chrony selects among all sources.
+{% for server in host_base_ntp_servers %}
+server {{ server }} iburst
+{% endfor %}

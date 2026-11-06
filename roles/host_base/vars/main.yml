@@ -12,5 +12,11 @@ host_base__key_pattern: >-
   [A-Za-z0-9+/]+={0,3}( \S+)?$
 host_base__sudoers_file: /etc/sudoers.d/host-base-admin
 host_base__timesyncd_dropin: /etc/systemd/timesyncd.conf.d/host-base.conf
+host_base__chrony_sources: /etc/chrony/sources.d/host-base.sources
+# The entry of host_base_releases for the running release; empty when there is none (the assert refuses that).
+host_base__release: "{{ host_base_releases[ansible_facts.distribution_version] | default({}) }}"
+host_base__time_daemon: "{{ host_base__release.time_daemon | default('') }}"
+# Packages providing a time service; every one but host_base__time_daemon must be absent.
+host_base__time_daemons: [chrony, systemd-timesyncd, ntp, ntpsec, openntpd]
 # A firewall source: "any", an IPv4 address or CIDR, or an IPv6 address or CIDR. Empty never matches.
 host_base__source_pattern: '^(any|[0-9]{1,3}([.][0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9A-Fa-f]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?)$'

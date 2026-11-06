@@ -30,6 +30,13 @@ Every role must pass one test: **would a second project need the same behaviour 
 
 Cut by the maintainer from `main`, tagged `vX.Y.Z`. Bump `version` in `galaxy.yml`, promote `[Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` after reconciling it against `git log <last-tag>..HEAD`, tag annotated, push, and create the release with `gh release create vX.Y.Z --verify-tag`. Pre-1.0, breaking changes (a renamed variable, a changed default with effect on hosts) bump the minor.
 
+## Repository protection
+
+`main` and release tags `v*` are protected by the rulesets in `.github/rulesets/`: no deletion or
+force-push on `main`, and only organization administrators create, move or delete a release tag. No
+status check is required. Apply or re-apply them with
+`gh api -X POST repos/<owner>/<repo>/rulesets --input .github/rulesets/<file>.json`.
+
 ## Code of conduct
 
 Be professional and constructive. Disagreements are about content, never people.

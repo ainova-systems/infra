@@ -66,6 +66,14 @@
   failed_when: false
   check_mode: false
 
+- name: Read time daemon state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ host_base__time_daemon }}"]
+  register: host_base__time_daemon_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
 - name: Assert host_base controls
   ansible.builtin.assert:
     that:
@@ -107,6 +115,7 @@
         + ([] if not host_base_auto_updates | bool or host_base__apt_periodic.stdout is search('Unattended-Upgrade "1"')
            else ['unattended upgrades not scheduled'])
         + ([] if not host_base_auto_updates | bool or host_base__uu_enabled.stdout | trim == 'enabled' else ['unattended-upgrades service not enabled'])
+        + ([] if host_base__time_daemon_state.stdout | trim == 'active' else [host_base__time_daemon ~ ' not active'])
         + ([] if host_base__time.stdout is search('(?m)^NTP=yes$') else ['time sync disabled'])
         + ([] if host_base__time.stdout is search('(?m)^NTPSynchronized=yes$') else ['clock not synchronized'])
       }}

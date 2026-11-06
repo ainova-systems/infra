@@ -6,10 +6,10 @@
   ansible.builtin.assert:
     that:
       - ansible_facts.distribution == 'Ubuntu'
-      - ansible_facts.distribution_version == '24.04'
+      - ansible_facts.distribution_version in ['26.04', '24.04']
       - ansible_facts.architecture == 'x86_64'
       - agent_workstation_accounts | length > 0
-    fail_msg: agent_workstation supports Ubuntu 24.04 on x86_64 with at least one account
+    fail_msg: agent_workstation supports Ubuntu 26.04 and 24.04 on x86_64 with at least one account
     quiet: true
 
 - name: Read pinned tool markers

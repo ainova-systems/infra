@@ -21,7 +21,7 @@ are documented as tool-neutral knowledge in [intelligence-infra-packs](https://g
 | `compose_host` | Host ready for pipeline-driven Compose stacks: unprivileged deploy account, stack directories, private env-file location | `compose_host_deploy_user`, `compose_host_stack_dirs` |
 | `swarm_node` | Initialize or join a Swarm as manager or worker; cluster ports open to listed peers only | `swarm_node_role`, `swarm_node_peers`, `swarm_node_advertise_addr` |
 | `host_health` | Check-only: uptime, memory, disk, failed units, container engine up, optional backup freshness under an S3-compatible prefix | `host_health_min_free_disk_pct`, `host_health_min_free_mem_pct`, `host_health_backup` |
-| `dev_workstation` | Per coding account: Git identity, pinned toolchain, forge CLI, Intelligence CLI with update timer, per-organization Git credentials | `dev_workstation_accounts` |
+| `dev_workstation` | Per coding account: Git identity, pinned toolchain, forge CLI, Intelligence CLI with update timer, per-scope Git credentials for any HTTPS forge | `dev_workstation_accounts` |
 | `agent_workstation` | Per account: pinned coding-agent CLIs, terminal tools, shared browser for automation, hidden-input credential helper | `agent_workstation_accounts`, `agent_workstation_tools` |
 
 Each role documents every variable in `defaults/main.yml` and its own `README.md`. A forge-specific role carries
@@ -37,7 +37,7 @@ the forge in its name; every other name is forge-neutral.
 | Pinned | Package, tool and image versions are pinned in `defaults/main.yml`; no `latest`, no `state: latest`. Images by tag and digest where the registry provides one. |
 | Prefixed | Every variable starts with the role name. |
 | Secrets | Every task touching one is `no_log: true`. |
-| Platform | Supported OS declared in `meta/main.yml` (Ubuntu 24.04 today) and asserted; no provider logic. |
+| Platform | Supported OS declared in `meta/main.yml` (Ubuntu 26.04 LTS, the default for new hosts, and 24.04 LTS) and asserted; a pin that differs per release is a map keyed by release with an assert that the running release has an entry; no provider logic. |
 
 ## Consuming the collection
 
@@ -48,7 +48,7 @@ The project pins this collection by tag next to the exact versions of its depend
 collections:
   - name: https://github.com/ainova-systems/infra-ansible.git
     type: git
-    version: v0.1.0
+    version: v0.2.0
   - name: devsec.hardening
     version: 11.0.0
   - name: community.docker
@@ -104,23 +104,27 @@ collections from [requirements.yml](requirements.yml)) for machines without a na
 - Inventory and variable files name a secret by its environment variable, never by value. Addresses live in the
   project's Git-ignored `.env`, which is not a credential channel.
 
-## Per-organization Git credentials
+## Per-scope Git credentials
 
-A coding account often needs two Git tokens: one for its project organization and one for shared repositories
-such as these collections. `dev_workstation` configures one credential scope per URL prefix:
+A coding account often needs more than one Git token: one for its project organization, one for shared
+repositories such as these collections, sometimes one on another forge. `dev_workstation` configures one
+credential scope per HTTPS URL prefix, on any forge:
 
 ```ini
-[credential "https://github.com/<organization>"]
-    helper = !<helper> <scope>
+[credential "https://<forge>/<organization>"]
+    helper = !<helper> <scope> <kind> <username>
     useHttpPath = true
 ```
 
-`useHttpPath` makes Git match the full repository path, so the most specific prefix wins and each organization
-gets its own token. The helper reads `GH_TOKEN` from `~/.config/git-credentials/<scope>.env` (`0600`, owned by the
-account). The default scope `{name: default, url: https://github.com}` covers everything else. Every tool that
-clones with plain `git`, including the Intelligence CLI fetching package registries, picks the right token with no
-configuration of its own. The account owner stores each token once with `agent-auth <scope>`, which reads it with
-hidden input and never echoes or logs it.
+`useHttpPath` makes Git match the full repository path, so the most specific prefix wins and each scope gets its
+own token. The helper answers with the scope's username and the `TOKEN` line of
+`~/.config/git-credentials/<scope>.env` (`0600`, owned by the account). A scope is `{name, url}` plus an optional
+`username` and `kind` (`github` for a `github.com` URL, `generic` otherwise); a `github` scope defaults its username
+to `x-access-token`, every other scope names its own. The default scope `{name: default, url: https://github.com}`
+covers everything else. Every tool that clones with plain `git`, including the Intelligence CLI fetching package
+registries, picks the right token with no configuration of its own. The account owner stores each token once with
+`agent-auth <scope>`, which reads it with hidden input and never echoes or logs it. The scope shape and the
+username each forge expects are in the [dev_workstation README](roles/dev_workstation/README.md#credential-scopes).
 
 ## Validate
 

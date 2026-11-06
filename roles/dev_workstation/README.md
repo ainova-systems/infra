@@ -1,7 +1,7 @@
 # dev_workstation
 
 Per coding account: the account itself, Git identity, a pinned development toolchain, GitHub CLI,
-Intelligence CLI with its update timer, and per-organization Git credential scopes.
+Intelligence CLI with its update timer, and per-scope Git credentials for any HTTPS forge.
 
 Boundary: provisioning installs ready-to-use non-secret configuration only. It never clones a
 repository, never runs `intelligence sync` or any project command, and never stores a token. Storing
@@ -25,7 +25,7 @@ a token is the owner's step, inside the account (`agent-auth <scope>` from `agen
         tasks_from: check
 ```
 
-Requirements: Ubuntu 24.04, x86_64, systemd (asserted). Per-account tasks run as that account through
+Requirements: Ubuntu 26.04 (default for new hosts) or 24.04, x86_64, systemd (asserted). Per-account tasks run as that account through
 `become_user`; the role installs `acl` so Ansible can hand its temporary files to an unprivileged user.
 No collection beyond `ansible.builtin`.
 
@@ -46,26 +46,64 @@ No collection beyond `ansible.builtin`.
 | Shared environment | `/etc/dev-workstation/toolchain.env` (systemd `EnvironmentFile` syntax) and `/etc/profile.d/dev-workstation-toolchain.sh` | - |
 | Credential scopes | Helper, preflight and per-account scope file (below) | - |
 
-## Per-organization Git credentials
+## Credential scopes
 
-A coding account may need a different token per organization. Each scope is `{name, url}`; the
-default is `{name: default, url: https://github.com}`.
+A coding account may need a different token per organization or per forge. Each scope routes one HTTPS
+URL prefix to one token file; the default is `{name: default, url: https://github.com}`.
+
+| Key | Required | Meaning |
+|---|---|---|
+| `name` | yes | Lowercase kebab-case, at most 32 characters; names the token file and the `agent-auth` argument |
+| `url` | yes | `https://<host>[/<path>...]` prefix, no user info, query or trailing slash; unique per account |
+| `kind` | no | `github` or `generic`. Default: `github` when the host is `github.com`, otherwise `generic` |
+| `username` | `generic` only | Username Git sends with the token. Default for `github`: `x-access-token` |
+| `validate_url` | no | HTTPS endpoint `agent-auth` calls with the token as a Bearer header (`agent_workstation`); ignored here |
+
+Any other key is rejected, so a credential cannot ride in on host variables. The username each forge
+expects for token authentication over HTTPS:
+
+| Forge, token | `username` |
+|---|---|
+| GitHub, any token | default `x-access-token` |
+| Bitbucket Cloud, API token | the account's Bitbucket username (case sensitive; not the email), or the static `x-bitbucket-api-token-auth` |
+| Bitbucket Cloud, repository, project or workspace access token | `x-token-auth` |
+| Other forges | the username their documentation names for HTTPS token authentication |
+
+Bitbucket Cloud app passwords stopped working on 2026-06-09; use an API token or an access token.
+
+```yaml
+dev_workstation_accounts:
+  - name: coder
+    git_name: Coder Agent
+    git_email: coder@example.invalid
+    credential_scopes:
+      - {name: default, url: https://github.com}
+      - {name: shared, url: https://github.com/example-org}
+      - {name: bitbucket, url: https://bitbucket.org/example-org, username: x-token-auth}
+```
 
 | Piece | Path | Owner, mode |
 |---|---|---|
-| Helper | `/usr/local/bin/git-credential-scope <scope>` | root, 0755 |
+| Helper | `/usr/local/bin/git-credential-scope <scope> <kind> <username>` | root, 0755 |
 | Preflight | `/usr/local/libexec/dev-workstation/credential-preflight` | root, 0755 |
 | Scope file | `~/.config/git/credential-scopes`, included from the account's global Git config | account, 0644 |
-| Token file | `~/.config/git-credentials/<scope>.env`, one line `GH_TOKEN=<token>` | account, 0600; written by the owner, never by this role |
+| Token file | `~/.config/git-credentials/<scope>.env`, exactly one line `TOKEN=<token>` | account, 0600; written by the owner, never by this role |
 
-Per scope the scope file sets `credential.<url>.helper` (reset, then the helper) and
-`credential.<url>.useHttpPath=true`. Sections are sorted so a prefix precedes the longer URLs under it,
-so the longest matching prefix alone answers. Any Git client that uses the credential protocol picks the
-right token, including a plain `git clone` by the Intelligence CLI.
+Token files written before 0.2.0 hold `GH_TOKEN=<token>`. That line is still read for a `github` scope, so
+existing stores keep working; a file holding both lines, or a `GH_TOKEN` line for a `generic` scope, fails the
+preflight. `agent-auth <scope>` rewrites a file with the `TOKEN` key.
 
-The helper answers `get` over `https` only, from the calling account's own token file for that scope.
-It ignores an inherited `GH_TOKEN`, a missing file, a link, or a file that is not owner-only 0600; Git
-then falls through to its prompt. It prints no diagnostics.
+Per scope the scope file sets `credential.<url>.helper` (reset, then the helper with the scope's kind and
+username) and `credential.<url>.useHttpPath=true`. Sections are sorted so a prefix precedes the longer URLs
+under it, so the longest matching prefix alone answers. Any Git client that uses the credential protocol picks
+the right token, including a plain `git clone` by the Intelligence CLI. The GitHub CLI concerns `github`
+scopes only; the role never logs it in, and Git needs no `gh` login on any forge.
+
+The helper answers `get` over `https` only, with the scope's username and the token from the calling
+account's own file for that scope. It ignores an inherited environment token, a missing file, a link, a
+file that is not owner-only 0600 or that does not hold exactly one accepted line; Git then falls through to
+its prompt. It prints no diagnostics. A scope file written by 0.1.0 (`helper = !<helper> <scope>`) is
+answered as a `github` scope until the next apply rewrites it.
 
 The preflight runs as the account before and after every apply and in the check. It fails on:
 
@@ -73,7 +111,7 @@ The preflight runs as the account before and after every apply and in the check.
 |---|---|
 | No links | `~/.config`, `~/.config/git`, `~/.config/git-credentials`, `~/.gitconfig`, `~/.config/git/config`, the scope file or `~/.profile` is a symlink |
 | Owner-only | Any of them is not owned by the account; `~/.config/git-credentials` is not 0700; a token file is not a regular 0600 file |
-| One token per file | A token file does not hold exactly one `GH_TOKEN=` line; a non-`.env` entry sits in the token directory |
+| One token per file | A token file does not hold exactly one `TOKEN=` line (or one legacy `GH_TOKEN=` line for a `github` scope); a non-`.env` entry sits in the token directory |
 | No competing store | `~/.git-credentials`, `~/.config/git/credentials` or `~/.config/gh/hosts.yml` exists |
 | No competing helper | Any `credential.*` setting comes from a file other than the scope file (system, global or included) |
 
@@ -84,7 +122,7 @@ account, then re-apply. The role never deletes account files.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `dev_workstation_accounts` | `[]` (required) | List of `{name, git_name, git_email, credential_scopes}`; any other key is rejected |
+| `dev_workstation_accounts` | `[]` (required) | List of `{name, git_name, git_email, credential_scopes}`; any other key is rejected; scopes as in [Credential scopes](#credential-scopes) |
 | `dev_workstation_default_credential_scopes` | `[{name: default, url: https://github.com}]` | Scopes for accounts that declare none |
 | `dev_workstation_account_shell` | `/bin/bash` | Shell for created accounts |
 | `dev_workstation_home_mode` | `0750` | Enforced home mode |

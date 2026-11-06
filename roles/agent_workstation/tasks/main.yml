@@ -5,9 +5,9 @@
   ansible.builtin.assert:
     that:
       - ansible_facts.distribution == 'Ubuntu'
-      - ansible_facts.distribution_version == '24.04'
+      - ansible_facts.distribution_version in ['26.04', '24.04']
       - ansible_facts.architecture == 'x86_64'
-    fail_msg: agent_workstation supports Ubuntu 24.04 on x86_64 only
+    fail_msg: agent_workstation supports Ubuntu 26.04 and 24.04 on x86_64 only
     quiet: true
 
 - name: Assert inputs
@@ -37,16 +37,29 @@
 - name: Assert credential scopes
   ansible.builtin.assert:
     that:
+      - scopes | type_debug == 'list'
       - scopes | length > 0
-      - scopes | map(attribute='name') | unique | length == scopes | length
-      - scopes | map(attribute='name') | select('match', '^[a-z0-9][a-z0-9-]*$') | list | length == scopes | length
-      - scopes | map(attribute='name') | intersect(agent_workstation__reserved_scopes) | length == 0
-      - scopes | map(attribute='url') | select('match', '^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)*$') | list | length == scopes | length
-      - scopes | selectattr('validate_url', 'defined') | map(attribute='validate_url') | reject('match', '^https://') | list | length == 0
-    fail_msg: "credential scopes of {{ item.name }} need unique kebab-case names and https URL prefixes"
+      - scopes | select('mapping') | list | length == scopes | length
+      - scopes | map('list') | flatten | unique | difference(agent_workstation__scope_keys) | length == 0
+      - scopes | map(attribute='name', default='') | unique | length == scopes | length
+      - scopes | map(attribute='name', default='') | select('match', '^[a-z0-9][a-z0-9-]{0,31}$') | list | length == scopes | length
+      - scopes | map(attribute='name', default='') | intersect(agent_workstation__reserved_scopes) | length == 0
+      - scopes | map(attribute='url', default='') | select('match', '^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~-]+)*$') | list | length == scopes | length
+      - scopes | map(attribute='url', default='') | unique | length == scopes | length
+      - >-
+        scopes | selectattr('validate_url', 'defined') | map(attribute='validate_url') | map('string')
+        | reject('match', '^https://[^\s]+$') | list | length == 0
+      - resolved | length == scopes | length
+      - resolved | map(attribute='kind') | map('string') | reject('in', ['github', 'generic']) | list | length == 0
+      - resolved | map(attribute='username') | map('string') | reject('match', '^[A-Za-z0-9._@+][A-Za-z0-9._@+-]{0,127}$') | list | length == 0
+    fail_msg: >-
+      credential scopes of {{ item.name }} need unique kebab-case names and https URL prefixes, optional kind
+      (github|generic), username and validate_url (https), and no other key; a generic scope (any host but
+      github.com unless kind is github) needs a username, e.g. x-token-auth for a Bitbucket access token
     quiet: true
   vars:
     scopes: "{{ item.credential_scopes | default(agent_workstation_default_credential_scopes) }}"
+    resolved: "{{ agent_workstation__scopes[item.name] | default([]) }}"
   loop: "{{ agent_workstation_accounts }}"
   loop_control:
     label: "{{ item.name }}"

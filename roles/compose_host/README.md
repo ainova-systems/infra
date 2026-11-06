@@ -8,7 +8,7 @@ or writes an env file's content. Stack deployment belongs to the pipeline.
 
 | Requirement | Source |
 |---|---|
-| Ubuntu 24.04, x86_64, systemd | asserted |
+| Ubuntu 26.04 (default) or 24.04, x86_64, systemd | asserted |
 | Docker Engine | `container_engine`; the docker group is asserted when `compose_host_deploy_docker_access` is set |
 | `become: true`, gathered facts | the calling play |
 

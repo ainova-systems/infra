@@ -4,13 +4,21 @@
 
 # Coding accounts. Every entry: {name, git_name, git_email, credential_scopes}; no other keys are accepted,
 # so a credential cannot ride in on host variables. credential_scopes is optional and defaults to
-# dev_workstation_default_credential_scopes. Scope: {name, url}; url is an https prefix with no trailing slash.
+# dev_workstation_default_credential_scopes.
+# Scope: {name, url, kind?, username?, validate_url?}; no other keys are accepted.
+#   url       https prefix with no user info, query or trailing slash
+#   kind      github | generic; default github for a github.com URL, generic otherwise
+#   username  sent with the token; default x-access-token for github, required for generic
+#             (Bitbucket Cloud: x-token-auth for an access token; the Bitbucket username or
+#             x-bitbucket-api-token-auth for an API token)
+#   validate_url  used by agent_workstation's agent-auth only
 #   - name: coder
 #     git_name: Coder Agent
-#     git_email: coder@example.com
+#     git_email: coder@example.invalid
 #     credential_scopes:
 #       - {name: default, url: https://github.com}
 #       - {name: shared, url: https://github.com/example-org}
+#       - {name: bitbucket, url: https://bitbucket.org/example-org, username: x-token-auth}
 dev_workstation_accounts: []
 
 dev_workstation_default_credential_scopes:

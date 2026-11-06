@@ -9,6 +9,7 @@ galaxy_info:
   platforms:
     - name: Ubuntu
       versions:
+        - resolute
         - noble
   galaxy_tags: [ci, runner, docker, compose]
 # Needs a rootful Docker Engine with the Compose plugin: apply container_engine (mode rootful) first.

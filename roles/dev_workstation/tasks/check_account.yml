@@ -55,7 +55,7 @@
   vars:
     dev_workstation_home: "{{ dev_workstation_passwd.stdout.split(':')[5] }}"
     dev_workstation_managed_gitconfig: "{{ dev_workstation_home }}/.config/git/credential-scopes"
-    dev_workstation_scopes: "{{ dev_workstation_account.credential_scopes | default(dev_workstation_default_credential_scopes) }}"
+    dev_workstation_scopes: "{{ dev_workstation__scopes[dev_workstation_account.name] }}"
   become: true
   become_user: "{{ dev_workstation_account.name }}"
   environment:
@@ -70,7 +70,7 @@
   block:
     - name: Run the credential preflight for {{ dev_workstation_account.name }}
       ansible.builtin.command:
-        argv: ["{{ dev_workstation_libexec_dir }}/credential-preflight", "{{ dev_workstation_managed_gitconfig }}"]
+        argv: "{{ [dev_workstation_libexec_dir ~ '/credential-preflight', dev_workstation_managed_gitconfig] + dev_workstation__generic_scopes }}"
         chdir: /
       register: dev_workstation_preflight
       changed_when: false
@@ -123,13 +123,19 @@
       check_mode: false
 
     - name: Assert Git identity and scope routing of {{ dev_workstation_account.name }}
+      vars:
+        dev_workstation_expected_helpers: >-
+          {%- set out = [] -%}
+          {%- for scope in dev_workstation_scopes -%}
+          {%-   set _ = out.append('!' ~ dev_workstation_credential_helper ~ ' ' ~ scope.name ~ ' ' ~ scope.kind ~ ' ' ~ scope.username) -%}
+          {%- endfor -%}
+          {{ out }}
       ansible.builtin.assert:
         that:
           - dev_workstation_git_current.results[0].stdout_lines == [dev_workstation_account.git_name]
           - dev_workstation_git_current.results[1].stdout_lines == [dev_workstation_account.git_email]
           - dev_workstation_managed_gitconfig in dev_workstation_git_current.results[2].stdout_lines
-          - dev_workstation_effective_helper.results | map(attribute='stdout') | list
-            == dev_workstation_scopes | map(attribute='name') | map('regex_replace', '^', '!' ~ dev_workstation_credential_helper ~ ' ') | list
+          - dev_workstation_effective_helper.results | map(attribute='stdout') | list == dev_workstation_expected_helpers
         fail_msg: "Git identity, include or credential routing of {{ dev_workstation_account.name }} differs from the role."
         quiet: true
 

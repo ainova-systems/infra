@@ -31,7 +31,8 @@ host_base_auto_updates: true
 host_base_auto_reboot: false
 host_base_auto_reboot_time: "03:00"
 
-# Time sync through systemd-timesyncd. Empty list keeps the distribution servers.
+# Time servers. Empty list keeps the distribution servers. With systemd-timesyncd they replace the
+# distribution servers; with chrony they are added beside the distribution's NTS pools.
 host_base_ntp_servers: []
 
 # The role refuses to change SSH and firewall on the machine running Ansible.
@@ -41,4 +42,19 @@ host_base_allow_control_node: false
 # Supported platforms, asserted before any change.
 host_base_supported_os:
   - distribution: Ubuntu
+    version: "26.04"
+  - distribution: Ubuntu
     version: "24.04"
+
+# Per release (keyed by ansible_facts.distribution_version): the sudo provider and the time daemon the
+# role installs and enables. The defaults follow each release: Ubuntu 26.04 ships sudo-rs and chrony,
+# 24.04 sudo and systemd-timesyncd. A supported release without an entry stops the run.
+#   sudo         sudo | sudo-rs
+#   time_daemon  chrony | systemd-timesyncd (the other one, ntp, ntpsec or openntpd installed stops the run)
+host_base_releases:
+  "26.04":
+    sudo: sudo-rs
+    time_daemon: chrony
+  "24.04":
+    sudo: sudo
+    time_daemon: systemd-timesyncd

@@ -18,5 +18,7 @@ container_engine__daemon_config: >-
   {{ {'log-driver': container_engine_log_driver,
       'log-opts': {'max-size': container_engine_log_max_size, 'max-file': container_engine_log_max_file | string}}
      | combine(container_engine_daemon_options) }}
+# AppArmor profile of the distribution apparmor package that allows /usr/bin/rootlesskit user namespaces.
+container_engine__rootlesskit_profile: /etc/apparmor.d/rootlesskit
 # Root-only wrapper that runs a command as a rootless account with its session bus and socket.
 container_engine__as_account: /usr/local/libexec/container-engine-as

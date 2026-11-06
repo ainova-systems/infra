@@ -4,12 +4,16 @@
 # Every version is a pin. Moving a pin means changing version and sha256 together.
 
 # Coding accounts served by this role. The accounts must already exist (dev_workstation).
-# credential_scopes must list the same {name, url} pairs as the dev_workstation entry for the
-# account; omit it to use agent_workstation_default_credential_scopes.
+# credential_scopes must list the same entries as the dev_workstation entry for the account; omit
+# it to use agent_workstation_default_credential_scopes. Scope: {name, url, kind?, username?,
+# validate_url?}, no other keys (contract in the dev_workstation defaults). kind github (default for
+# a github.com URL) validates against the GitHub API; kind generic stores without an API call unless
+# validate_url is set, and needs a username.
 #   - name: coder
 #     credential_scopes:
 #       - {name: default, url: "https://github.com"}
 #       - {name: shared, url: "https://github.com/example-org"}
+#       - {name: bitbucket, url: "https://bitbucket.org/example-org", username: x-token-auth}
 agent_workstation_accounts: []
 
 # Scopes used when an account declares none. Same contract as dev_workstation.

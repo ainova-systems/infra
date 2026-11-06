@@ -4,7 +4,7 @@ Docker Engine from the signed upstream apt repository at pinned versions, as a s
 or with no system daemon at all (`rootless`), plus one rootless daemon per listed account in either mode.
 Every daemon gets log rotation and its own scheduled cleanup timer.
 
-Supported: Ubuntu 24.04 on x86_64 or aarch64 (`meta/main.yml`, asserted before any change). Requires `become: true`.
+Supported: Ubuntu 26.04 (default for new hosts) or 24.04 on x86_64 or aarch64 (`meta/main.yml`, asserted before any change). Requires `become: true`.
 
 ## Entry points
 
@@ -42,6 +42,10 @@ Supported: Ubuntu 24.04 on x86_64 or aarch64 (`meta/main.yml`, asserted before a
 - Packages are installed at the exact resolved version and held.
 - Rootless mode masks `docker.service`, `docker.socket` and `containerd.service` before installing, so package
   hooks never start a privileged daemon, and it refuses to stop one that is already active.
+- Ubuntu 24.04 and 26.04 set `kernel.apparmor_restrict_unprivileged_userns=1`; `rootlesskit` from the pinned
+  `docker-ce-rootless-extras` is allowed user namespaces by `/etc/apparmor.d/rootlesskit`, which the distribution
+  `apparmor` package ships on both releases. With the restriction on and that profile missing, rootless mode stops
+  before any change; the role neither lowers the restriction nor writes a profile.
 - A rootless account must exist, hold no sudo rights and own subordinate UID and GID ranges of at least 65536.
   The role never creates accounts and never adds anyone to the `docker` group, which is root-equivalent.
 - A daemon configuration change restarts that daemon, which stops its containers.

@@ -9,6 +9,7 @@ galaxy_info:
   platforms:
     - name: Ubuntu
       versions:
+        - resolute
         - noble
   galaxy_tags: [workstation, development, agents, playwright]
 # Accounts, Node and Git credential helpers come from dev_workstation; apply it first.

@@ -48,4 +48,6 @@ container_engine_cleanup: {}
 
 container_engine_supported_os:
   - distribution: Ubuntu
+    version: "26.04"
+  - distribution: Ubuntu
     version: "24.04"

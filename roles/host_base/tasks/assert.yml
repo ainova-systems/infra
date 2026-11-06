@@ -18,6 +18,17 @@
     fail_msg: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} is not in host_base_supported_os"
     quiet: true
 
+- name: Assert the release has its packages declared
+  ansible.builtin.assert:
+    that:
+      - host_base__release is mapping
+      - host_base__release.sudo | default('') in ['sudo', 'sudo-rs']
+      - host_base__release.time_daemon | default('') in ['chrony', 'systemd-timesyncd']
+    fail_msg: >-
+      host_base_releases has no valid entry for {{ ansible_facts.distribution_version }}: declare
+      {sudo: sudo|sudo-rs, time_daemon: chrony|systemd-timesyncd} for it.
+    quiet: true
+
 - name: Assert host_base inputs
   ansible.builtin.assert:
     that:

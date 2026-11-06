@@ -21,6 +21,37 @@
       is not supported by container_engine
     quiet: true
 
+# Ubuntu 24.04 and 26.04 restrict unprivileged user namespaces through AppArmor; rootlesskit from the
+# docker-ce-rootless-extras package is allowed them by the profile the distribution's apparmor package ships.
+# The role writes no AppArmor profile: without that one, rootless mode stops here.
+- name: Read the unprivileged user namespace restriction
+  ansible.builtin.command:
+    argv: [sysctl, -n, kernel.apparmor_restrict_unprivileged_userns]
+  register: container_engine__userns_restricted
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: container_engine_rootless_accounts | length > 0
+
+- name: Read the distribution rootlesskit AppArmor profile
+  ansible.builtin.stat:
+    path: "{{ container_engine__rootlesskit_profile }}"
+  register: container_engine__rootlesskit_apparmor
+  when: container_engine_rootless_accounts | length > 0
+
+- name: Assert rootlesskit may create user namespaces
+  ansible.builtin.assert:
+    that:
+      - >-
+        container_engine__userns_restricted.stdout | default('') | trim != '1'
+        or (container_engine__rootlesskit_apparmor.stat.isreg | default(false))
+    fail_msg: >-
+      kernel.apparmor_restrict_unprivileged_userns is 1 and {{ container_engine__rootlesskit_profile }} is missing,
+      so rootless daemons cannot start. Restore the distribution apparmor package; the role does not weaken the
+      restriction or write a profile.
+    quiet: true
+  when: container_engine_rootless_accounts | length > 0
+
 - name: Assert container_engine inputs
   ansible.builtin.assert:
     that:

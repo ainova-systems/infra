@@ -26,4 +26,6 @@ host_health_backup_inspect_keys: 3
 
 host_health_supported_os:
   - distribution: Ubuntu
+    version: "26.04"
+  - distribution: Ubuntu
     version: "24.04"

@@ -4,7 +4,7 @@ Per coding account: pinned coding-agent CLIs, terminal tools, a shared sandboxed
 and `agent-auth`, the hidden-input credential helper. Apply after `dev_workstation`, which owns the
 accounts, Node, Git identity and the per-scope Git credential helpers this role's `agent-auth` feeds.
 
-Supported: Ubuntu 24.04, x86_64 (asserted).
+Supported: Ubuntu 26.04 (default for new hosts) or 24.04, x86_64 (asserted).
 
 ## What it installs
 
@@ -17,7 +17,7 @@ Supported: Ubuntu 24.04, x86_64 (asserted).
 | Chrome | `/opt/google/chrome/` | Existing root-owned Chrome kept; otherwise the Chromium bound to the pinned Playwright |
 | `agent-playwright` | `/usr/local/bin/` | `--check`, `--check-url <url>`, `--version`, or run a CommonJS script |
 | `agent-auth` | `/usr/local/bin/` | Hidden-input token store per credential scope |
-| Scope list | `/etc/agent-workstation/credential-scopes.json` | Non-secret: scope names and URL prefixes per account |
+| Scope list | `/etc/agent-workstation/credential-scopes.json` | Non-secret: scope names, URL prefixes, kinds and usernames per account |
 
 ## Controls
 
@@ -40,17 +40,26 @@ Old version directories are kept for running sessions; remove them by hand once 
 Run inside the coding account, at an interactive terminal:
 
 ```text
-agent-auth [SCOPE]          prompt for a token (hidden), validate it, store it for SCOPE
+agent-auth [SCOPE]          prompt for a token (hidden), validate it where the scope can be, store it
 agent-auth check [SCOPE]    check stored credentials (all scopes when omitted)
-agent-auth list             list scopes and whether a credential is stored
+agent-auth list             list scopes (name, kind, username, URL) and whether a credential is stored
 agent-auth remove SCOPE     delete the stored credential of SCOPE
 ```
 
-The token lands in `~/.config/git-credentials/<scope>.env` as `GH_TOKEN=<token>`, mode 0600, directory
-0700: the file the `dev_workstation` Git credential helper for that scope reads. It is never an argument,
-never echoed, never logged. A scope URL on `github.com` is validated against the GitHub API before
-storing; other hosts validate against the scope's `validate_url`, or store unvalidated and say so.
-Redirects are refused so a token is never forwarded. `SCOPE` defaults to `default`, or to the only scope.
+The token lands in `~/.config/git-credentials/<scope>.env` as `TOKEN=<token>`, mode 0600, directory
+0700: the file the `dev_workstation` Git credential helper for that scope reads and sends with the scope's
+username. It is never an argument, never piped, never echoed, never logged, and `agent-auth` refuses to run
+as root.
+
+| Scope kind | Validation before storing |
+|---|---|
+| `github` | GitHub API with the token as a Bearer header: `https://api.github.com/user` for `github.com`, `https://<host>/api/v3/user` for another host; or the scope's `validate_url` |
+| `generic` | None: stored after the hidden prompt with no API call, unless the scope declares `validate_url` (called with a Bearer header) |
+
+Redirects are refused so a token is never forwarded. A stored `generic` token is confirmed by Git use, for
+example `git ls-remote <repository-url>` inside the account, which reaches the token only through the
+credential helper. A file written before 0.2.0 with `GH_TOKEN=<token>` still reads for a `github` scope;
+storing the token again rewrites it with `TOKEN`. `SCOPE` defaults to `default`, or to the only scope.
 
 ## Variables
 
@@ -83,9 +92,11 @@ Redirects are refused so a token is never forwarded. `SCOPE` defaults to `defaul
 | `agent_workstation_browser_packages` | Chromium runtime libraries and fonts | Signed OS packages |
 | `agent_workstation_auth_command` | `/usr/local/bin/agent-auth` | Helper path |
 
-`credential_scopes` entries are `{name, url, validate_url?}`. Names are lowercase kebab-case and may not
-be `check`, `list`, `remove`, `help` or `credential`. Define the list once per project and pass the
-same value to `dev_workstation` and this role, so the helper and the store agree.
+`credential_scopes` entries are `{name, url, kind?, username?, validate_url?}`, the contract and forge
+usernames of [dev_workstation](../dev_workstation/README.md#credential-scopes); any other key is rejected.
+Names are lowercase kebab-case and may not be `check`, `list`, `remove`, `help` or `credential`. Define the
+list once per project and pass the same value to `dev_workstation` and this role, so the helper and the
+store agree.
 
 ## Usage
 

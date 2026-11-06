@@ -1,7 +1,12 @@
 ---
-# Syntax target only: never contacted. The name resolves nowhere (.invalid) and is not localhost.
+# Syntax target only: never contacted. The names resolve nowhere (.invalid) and are not localhost.
+# One target per supported release (Ubuntu 26.04, the default for new hosts, and 24.04); the roles assert
+# the release from facts at run time.
 all:
   hosts:
-    syntax-target:
-      ansible_host: syntax-target.invalid
+    syntax-target-resolute:
+      ansible_host: syntax-target-resolute.invalid
+      ansible_connection: ssh
+    syntax-target-noble:
+      ansible_host: syntax-target-noble.invalid
       ansible_connection: ssh
