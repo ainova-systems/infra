@@ -33,3 +33,10 @@ Cut by the maintainer from `main`, tagged `vX.Y.Z`. Promote `[Unreleased]` to `#
 ## Code of conduct
 
 Be professional and constructive. Disagreements are about content, never people.
+
+## Repository protection
+
+`main` and release tags `v*` are protected by the rulesets in `.github/rulesets/`: no deletion or
+force-push, `validate` required on `main`, and only organization administrators create, move or
+delete a release tag. Apply or re-apply them with
+`gh api -X POST repos/<owner>/<repo>/rulesets --input .github/rulesets/<file>.json`.
