@@ -11,7 +11,7 @@ Read-only. Never changes the target, and never edits a pin or a control to make 
 ## Steps
 
 1. Resolve the host: valid ids are the directories matched by profile `host_manifests`. With no argument, list them and ask.
-2. Read profile `host_check`. When it is `none`, or the manifest declares no check, stop and report that the host has no audit yet; never improvise one.
+2. Read profile `host_check`, and the engine page in `infra-host-install`'s `references/engines/` when profile `host_engine` is not `none`. When it is `none`, or the manifest declares no check, stop and report that the host has no audit yet; never improvise one.
 3. Run the command from the repository root. Connection values come from profile `operator_env`; a missing name fails closed and is reported by name.
 4. Read every line, not only the exit code:
    - `FAIL` in readiness or security: blocking, and the only cause of a nonzero exit.

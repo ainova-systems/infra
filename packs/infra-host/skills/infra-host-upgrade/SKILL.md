@@ -11,7 +11,7 @@ An upgrade is a deliberate decision, never a reaction to a `DRIFT` line or a fai
 ## Steps
 
 1. Confirm the new version exists upstream before editing: the package index on the target for a package pin, a dereferenced tag (`git ls-remote <repo> refs/tags/<tag>^{}`) for a Git-pinned runtime, the registry digest for an image.
-2. Find every location profile `host_pin_locations` lists for this host, plus any further place a search of the repository finds the old version. Missing one makes the installer and the check disagree silently.
+2. When profile `host_engine` is not `none`, read its pin rules in `infra-host-install`'s `references/engines/`. Find every location profile `host_pin_locations` lists for this host, plus any further place a search of the repository finds the old version. Missing one makes the installer and the check disagree silently.
 3. For a digest pin, derive the digest from a commit-addressed URL and record how; never copy one observed from a rolling URL.
 4. Keep version, tag and commit consistent, and verify the tag dereferences to the recorded commit.
 5. Write a decision record when the upgrade changes a control, a supply source or a trust assumption; a patch bump within the same source needs none.

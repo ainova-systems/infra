@@ -9,10 +9,10 @@
 | infra-core | `infra-environments` | template | Shape of the generated environments rule and class defaults |
 | infra-host | `infra-host-create` | skill | New host trust domain; host control contract in `references/host-controls.md` |
 | infra-host | `infra-host-check` | skill | Run and interpret the read-only host check |
-| infra-host | `infra-host-install` | skill | Run setup, diagnose in the repository, drive the check green |
+| infra-host | `infra-host-install` | skill | Run setup, diagnose in the repository, drive the check green; engine rules in `references/engines/` |
 | infra-host | `infra-host-refresh` | skill | Rewrite the observed-state record from the live host |
 | infra-host | `infra-host-upgrade` | skill | Move a pin in every place it is recorded |
-| infra-host | `infra-host-profile` | template | Host profile keys |
+| infra-host | `infra-host-profile` | template | Host profile keys, including `host_engine` |
 | infra-platform | `infra-runner-change` | skill | Add, resize, relabel, stop or remove a self-hosted runner |
 | infra-platform | `infra-platform-profile` | template | Platform profile keys |
 | infra-stack | `infra-stack-check` | skill | Stack contract per class; runtime rules in `references/runtimes/` |

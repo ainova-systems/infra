@@ -26,7 +26,7 @@ Install only the layers a project runs. Every pack depends on `infra-core` alone
 | Pack | Layer | Skills |
 |---|---|---|
 | `@ainova-systems/infra-core` | Cross-cutting | `infra-init`, `infra-audit`; the always-on `infra-discipline` rule |
-| `@ainova-systems/infra-host` | Provider and OS | `infra-host-create`, `-check`, `-install`, `-refresh`, `-upgrade`; provider-neutral host control contract |
+| `@ainova-systems/infra-host` | Provider and OS | `infra-host-create`, `-check`, `-install`, `-refresh`, `-upgrade`; provider-neutral host control contract; Ansible engine rules selected by profile |
 | `@ainova-systems/infra-platform` | Platform | `infra-runner-change`: self-hosted runners, labels per class, limits, cleanup |
 | `@ainova-systems/infra-stack` | Application stack | `infra-stack-check`, `infra-stack-deploy`; Compose, Swarm and k3s rules, runtime chosen per environment class |
 | `@ainova-systems/infra-release` | Release | `infra-release-promote`, `infra-preview` |

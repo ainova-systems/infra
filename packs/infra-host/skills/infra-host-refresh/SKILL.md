@@ -12,7 +12,7 @@ The observed-state file is a dated snapshot of what was found; the manifest stay
 
 1. Resolve the host. Unreachable means stop and say so; never refresh from memory or from the previous file.
 2. Run `infra-host-check` first; a refresh of a failing host says so in the same edit.
-3. Collect observed state read-only in one round trip: OS and kernel, install dates, resolved version of every pinned component, held packages, accounts and groups, firewall, listeners, user services.
+3. Collect observed state read-only in one round trip, through the engine's check play when profile `host_engine` is not `none` (rules in `infra-host-install`'s `references/engines/`): OS and kernel, install dates, resolved version of every pinned component, held packages, accounts and groups, firewall, listeners, user services.
 4. Rewrite the file profile `host_observed_state` names: date, host table, toolchain with versions, security posture, restart behaviour, known gaps, and the decision records that accepted each open risk.
 5. Keep addresses, login names and provider instance ids out of it; they belong in profile `operator_env`.
 6. Update only the manifest fields profile `host_observed_fields` lists. Pins and policy change through `infra-host-upgrade` or a deliberate edit.

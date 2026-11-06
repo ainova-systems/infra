@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
+### Added
+
+- `@ainova-systems/infra-host`: profile key `host_engine` (`ansible` or `none`), read by `infra-host-check`, `infra-host-install`, `infra-host-upgrade` and `infra-host-refresh`.
+- `@ainova-systems/infra-host`: Ansible engine reference in `infra-host-install` `references/engines/ansible.md`: always limited, check-and-diff before apply, tags for partial runs, serial rollout for staging and production, pinned versions, run-time secrets with `no_log`, read-only check play, no remote-access changes to the control node.
+
 ## [0.1.0] - 2026-11-06
 
 First release: six layer packs.

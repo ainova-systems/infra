@@ -35,7 +35,7 @@ Every pack depends on `infra-core` only. Including a layer never pulls in anothe
 | Pack | Layer | Owns | Alternatives |
 |---|---|---|---|
 | `@ainova-systems/infra-core` | cross-cutting | Desired vs observed state, environment classes and their invariants, secret placement, decision records, idempotency; `infra-init`, `infra-audit` | — |
-| `@ainova-systems/infra-host` | L0 provider + L1 OS | Host lifecycle: `infra-host-create`, `-check`, `-install`, `-refresh`, `-upgrade` | None in the pack: one provider-neutral control contract; each project documents its own providers at profile `host_provider_docs` |
+| `@ainova-systems/infra-host` | L0 provider + L1 OS | Host lifecycle: `infra-host-create`, `-check`, `-install`, `-refresh`, `-upgrade` | Providers: none in the pack, one provider-neutral control contract; each project documents its own at profile `host_provider_docs`. Engines: profile `host_engine` (`ansible` or `none`) selects a page in `infra-host-install` `references/engines/` |
 | `@ainova-systems/infra-platform` | L2 platform | Container engine and self-hosted CI runners: `infra-runner-change` | Engine by profile `container_engine` |
 | `@ainova-systems/infra-stack` | L3 application stack | The stack contract below: `infra-stack-check`, `infra-stack-deploy` | Runtime per environment class by profile `stack_runtimes` (compose, swarm, k3s) |
 | `@ainova-systems/infra-release` | L4 release | Promotion behind gates and the preview lifecycle: `infra-release-promote`, `infra-preview` | — |
@@ -94,6 +94,7 @@ Example keys:
 infra_layers: host, platform, stack, release, operator
 env_classes: dev, cicd, preview, staging, production
 host_provider_docs: docs/providers/<provider>.md
+host_engine: ansible
 stack_runtimes: preview=compose, staging=compose, production=swarm
 ```
 
