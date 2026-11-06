@@ -18,6 +18,7 @@ description: Project profile keys the infra-host pack reads, with their defaults
 ## Commands
 
 - host_engine: none                  <!-- engine behind host_check and host_setup: ansible, or none = project commands only; a named engine adds the rules in infra-host-install references/engines/<engine>.md -->
+- host_trust: none                   <!-- records a new host's SSH key after an out-of-band fingerprint check, with <id> and <fingerprint>; none = keys are recorded by hand -->
 - host_check: none                   <!-- read-only check command for one host, with <id>; exit 0 = every mandatory control passed -->
 - host_setup: none                   <!-- operator-side setup command for one host, with <id>; copies the target installer and runs it -->
 - host_setup_phases: none            <!-- named partial phases the setup command accepts, e.g. Base, Accounts, Identity -->

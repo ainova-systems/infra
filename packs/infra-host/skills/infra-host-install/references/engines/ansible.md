@@ -14,6 +14,23 @@ playbook wrapper; profile `host_setup_phases` are role tags. Every rule below ad
 | Secrets | Read at run time from the environment or `vars_prompt`; every task that touches one sets `no_log: true`; never an encrypted vault in Git |
 | Control node | Remote-access, account and firewall roles never apply to the host the playbook runs from; apply them from another control node |
 
+## Run by the skill
+
+The host skills run the wrapper themselves; the owner states the intent ("check <id>", "install <id>")
+and never types the commands. Everything a run needs is therefore obtained without a terminal:
+
+| Need | How the wrapper gets it | Owner's part |
+|---|---|---|
+| Toolchain | Creates the pinned engine (requirements file) and collections outside the checkout on first use | none |
+| Admin key | An existing agent, else a per-run agent loaded from the key file the operator env names; held in memory, never copied | names the key file once |
+| Host key | Profile `host_trust` records it only when it equals a fingerprint confirmed out of band: the provider console, or a `known_hosts` entry the owner already trusts | reads the fingerprint on the console for a new host |
+| Short-lived tokens | Created at run time by a CLI the owner already authenticated (the forge CLI for runner registration), passed through the run's environment only | none |
+| Other secrets | The project's hidden-input helper; the run stops and names it | types the secret once |
+| Approval | The `--check --diff` result is shown; apply follows the owner's go-ahead | approves |
+
+- Prompts are disabled when no terminal is attached: a missing secret fails the run with its name, never hangs.
+- A step the skill cannot do without the owner is asked for as a decision or a value, never as a command to run.
+
 ## Rules
 
 - Install requirements into the project's ignored collections path before every run, so the pinned versions are the ones executed.

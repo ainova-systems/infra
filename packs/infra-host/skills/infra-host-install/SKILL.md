@@ -12,7 +12,7 @@ The installer is idempotent and re-runnable. Every fix belongs in the repository
 
 1. Resolve the host and profile `host_setup`. When profile `host_engine` is not `none`, follow its page in this skill's `references/engines/` as well. A partial run names one of profile `host_setup_phases`.
 2. **Break glass.** Before any phase that can change remote access, firewall, accounts or boot access, confirm the out-of-band path in profile `host_break_glass` for the host's provider works. If it does not, stop.
-3. **Preconditions.** Confirm the bootstrap preconditions the installer enforces, so a failure costs seconds rather than a half-run.
+3. **Preconditions.** Confirm the bootstrap preconditions the installer enforces, so a failure costs seconds rather than a half-run. A host the control node has never reached gets its key through profile `host_trust`, with a fingerprint the owner confirms out of band; never accept a key on first use.
 4. **Before-state.** Run `infra-host-check` and keep its output.
 5. **Configuration first.** Provisioning installs every non-secret setting each account needs: Git identity, forge and credential-helper settings, tools. Hand the owner only authentication, through profile `host_secret_setup` or a native login. Never ask the owner to run configuration commands, and never clone, build or prepare a project as part of provisioning or login.
 6. **Run** the setup command in the background with output to a log under the repository's ignored scratch directory: it installs packages and pulls images and outlives a foreground timeout.

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-07
+
+### Added
+
+- Ansible engine reference: how a skill runs the wrapper end to end with no command typed by the owner.
+- Profile key `host_trust`: records a new host's SSH key after an out-of-band fingerprint check.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added
