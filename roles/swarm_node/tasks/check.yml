@@ -25,7 +25,8 @@
 - name: Assert no cluster port is open beyond the listed peers
   ansible.builtin.assert:
     that:
-      - swarm_node__ufw_status.stdout is search('^Status: active', multiline=true)
+      - >-
+        swarm_node__ufw_status.stdout is search('^Status: active', multiline=true)
       - >-
         swarm_node__cluster_lines
         | reject('search', '^ufw allow from (' ~ (swarm_node_peers | map('regex_escape') | join('|') | default('(?!)', true)) ~ ') ')

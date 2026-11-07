@@ -130,7 +130,8 @@
     - name: Check Herdr integrations of {{ agent_workstation__check_name }}
       ansible.builtin.assert:
         that:
-          - agent_workstation__check_herdr.stdout_lines | select('match', '^' ~ item ~ ': current \(v[0-9]+\)') | list | length > 0
+          - >-
+            agent_workstation__check_herdr.stdout_lines | select('match', '^' ~ item ~ ': current \(v[0-9]+\)') | list | length > 0
         fail_msg: "Herdr {{ item }} integration is not current for {{ agent_workstation__check_name }}"
         quiet: true
       loop: "{{ agent_workstation_herdr_integrations }}"

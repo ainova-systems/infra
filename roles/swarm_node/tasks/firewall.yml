@@ -12,7 +12,8 @@
 - name: Assert the firewall is active
   ansible.builtin.assert:
     that:
-      - swarm_node__ufw_status.stdout is search('^Status: active', multiline=true)
+      - >-
+        swarm_node__ufw_status.stdout is search('^Status: active', multiline=true)
     fail_msg: ufw is not active. Apply host_base (default-deny inbound) before opening cluster ports.
     quiet: true
 

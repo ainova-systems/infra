@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-07
+
+### Fixed
+
+- `agent_workstation`, `swarm_node`: three conditionals that parsed as mappings and failed when the check ran are strings again.
+
+### Added
+
+- `scripts/check-conditionals.py`: validation fails on any conditional that is not a string.
+
 ## [0.4.0] - 2026-11-07
 
 ### Added

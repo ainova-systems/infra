@@ -2,6 +2,7 @@
 # Validate the collection:
 # - every role has README.md, defaults/main.yml, tasks/main.yml, tasks/check.yml and meta/main.yml.
 # - tests/all-roles.yml imports every role twice (apply and check) and names no role that is absent.
+# - every conditional (that, when, failed_when, changed_when, until) is a string.
 # - no `latest` versions or image tags and no Ansible Vault payloads in tracked content.
 # - requirements.yml installs, tests/all-roles.yml passes `ansible-playbook --syntax-check`,
 #   tests/local-probes.yml runs the check probes on the control node, and ansible-lint passes.
@@ -49,6 +50,10 @@ fi
 if grep -rlE '^\$ANSIBLE_VAULT;' --exclude-dir=.git --exclude-dir=.tmp --exclude-dir=.ansible . 2>/dev/null; then
     fail "an Ansible Vault payload is tracked; secrets reach a run through env or vars_prompt only"
 fi
+
+# shellcheck disable=SC2046 # word splitting of the file list is intended
+python3 scripts/check-conditionals.py $(find roles tests -name '*.yml' -not -path 'tests/roles/*' | sort) ||
+    fail "a conditional is not a string (quote it or use a folded scalar)"
 
 if [ "$errors" -gt 0 ]; then
     echo "$errors structural failure(s); skipping Ansible checks" >&2
