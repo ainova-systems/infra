@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-07
+
+### Fixed
+
+- `dev_workstation`: the gh wrapper hands gh the token of the scope that covers the repository's owner, as the Git helpers choose by URL, instead of always the account's gh scope; `GH_SCOPE` names a scope explicitly.
+
 ## [0.4.3] - 2026-11-07
 
 ### Added

@@ -413,7 +413,10 @@
           - >-
             dev_workstation__gh_scope_of.gamma == {'name': 'enterprise', 'host': 'ghe.example.invalid'}
           - "'delta' not in dev_workstation__gh_scope_of"
-        fail_msg: "got {{ dev_workstation__gh_scope_of }}"
+          - dev_workstation__gh_routes_of.alpha == 'example-org=shared'
+          - dev_workstation__gh_routes_of.beta == ''
+          - dev_workstation__gh_routes_of.gamma == ''
+        fail_msg: "got {{ dev_workstation__gh_scope_of }} and routes {{ dev_workstation__gh_routes_of }}"
 
     - name: Assert the Intelligence CLI update schedule per mode
       vars:
@@ -449,6 +452,10 @@
             suffix: .render-probe
           register: local_probes_render
 
+        - name: Point the gh wrapper at a stand-in GitHub CLI
+          ansible.builtin.set_fact:
+            dev_workstation__gh_real: "{{ local_probes_render.path }}/bin/real-gh"
+
         - name: Render the gh wrapper and the toolchain environment
           ansible.builtin.copy:
             content: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../roles/dev_workstation/templates/' ~ item) }}"
@@ -473,10 +480,82 @@
             local_probes_wrapper: "{{ lookup('ansible.builtin.file', local_probes_render.path ~ '/gh-wrapper.sh.j2') }}"
           ansible.builtin.assert:
             that:
-              - local_probes_wrapper is search('alpha\) scope=default; host=github.com ;;')
-              - local_probes_wrapper is search('gamma\) scope=enterprise; host=ghe.example.invalid ;;')
+              - local_probes_wrapper is search("alpha\) scope=default; host=github.com; routes='example-org=shared' ;;")
+              - local_probes_wrapper is search("gamma\) scope=enterprise; host=ghe.example.invalid; routes='' ;;")
               - local_probes_wrapper is not search('delta\)')
               - local_probes_env.stdout == '/usr/bin/soffice'
+
+        # Account alpha with a default and a shared token: the stand-ins answer id and getent for alpha, and the
+        # stand-in gh prints the token it received.
+        - name: Create the stand-in directories
+          ansible.builtin.file:
+            path: "{{ local_probes_render.path }}/{{ item }}"
+            state: directory
+            mode: "0700"
+          loop: [bin, home/.config/git-credentials]
+
+        - name: Create the stand-in commands and alpha's token files
+          ansible.builtin.copy:
+            content: "{{ item.content }}"
+            dest: "{{ local_probes_render.path }}/{{ item.path }}"
+            mode: "{{ item.mode }}"
+          loop:
+            - path: bin/id
+              mode: "0755"
+              content: "#!/bin/sh\ncase \"$1\" in -un) echo alpha ;; *) exec /usr/bin/id \"$@\" ;; esac\n"
+            - path: bin/getent
+              mode: "0755"
+              content: "#!/bin/sh\necho \"alpha:x:$(/usr/bin/id -u):$(/usr/bin/id -g)::{{ local_probes_render.path }}/home:/bin/sh\"\n"
+            - path: bin/real-gh
+              mode: "0755"
+              content: "#!/bin/sh\nprintf '%s' \"${GH_TOKEN:-none}\"\n"
+            - {path: home/.config/git-credentials/default.env, mode: "0600", content: "TOKEN=default-token\n"}
+            - {path: home/.config/git-credentials/shared.env, mode: "0600", content: "TOKEN=shared-token\n"}
+          loop_control:
+            label: "{{ item.path }}"
+
+        - name: Create a checkout whose origin belongs to the shared owner
+          ansible.builtin.command:
+            argv: [git, init, -q, "{{ local_probes_render.path }}/repo"]
+            creates: "{{ local_probes_render.path }}/repo/.git"
+
+        - name: Point the checkout's origin at the shared owner
+          ansible.builtin.command:
+            argv: [git, -C, "{{ local_probes_render.path }}/repo", remote, add, origin, "git@github.com:Example-Org/thing.git"]
+          changed_when: true
+
+        - name: Run the gh wrapper for each way a call names its repository
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv:
+              - sh
+              - -c
+              - >-
+                w=$1/gh-wrapper.sh.j2;
+                printf '%s\n'
+                "$(sh "$w" -R example-org/thing pr list)"
+                "$(sh "$w" --repo=https://github.com/Example-Org/thing pr list)"
+                "$(sh "$w" api repos/example-org/thing/pulls)"
+                "$(sh "$w" -R someone/else pr list)"
+                "$(cd "$1/repo" && sh "$w" pr create)"
+                "$(sh "$w" pr list)"
+                "$(GH_SCOPE=shared sh "$w" pr list)"
+                "$(GH_TOKEN=preset sh "$w" pr list)"
+              - probe
+              - "{{ local_probes_render.path }}"
+            chdir: "{{ local_probes_render.path }}"
+          environment:
+            PATH: "{{ local_probes_render.path }}/bin:/usr/bin:/bin"
+          register: local_probes_gh
+          changed_when: false
+
+        - name: Assert the wrapper hands gh the token of the scope covering the owner
+          ansible.builtin.assert:
+            that:
+              - local_probes_gh.stdout_lines == local_probes_gh_expected
+            fail_msg: "got {{ local_probes_gh.stdout_lines }}"
+          vars:
+            local_probes_gh_expected: [shared-token, shared-token, shared-token, default-token, shared-token, default-token, shared-token, preset]
       always:
         - name: Remove the rendered scripts
           ansible.builtin.file:

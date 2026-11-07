@@ -62,7 +62,10 @@ environment only. Nothing is exported to the shell or written; `~/.config/gh/hos
 preflight. A token already in the environment wins; without a usable file gh runs unauthenticated.
 
 The gh scope is the account's `gh_scope`, or else its `github` scope on `github.com` whose URL sorts first (the
-plain `https://github.com` scope when declared). An existing `/usr/local/bin/gh` this role did not write stops
+plain `https://github.com` scope when declared). A call on a repository whose owner another `github` scope of the
+account covers (`https://<host>/<owner>`) gets that scope's token instead, as the Git helpers choose by URL: the
+owner of `-R`/`--repo`, of an `api repos/<owner>/...` path, or of the current checkout's `origin`.
+`GH_SCOPE=<scope>` names one of those scopes explicitly. An existing `/usr/local/bin/gh` this role did not write stops
 the run: another tool's wrapper is retired deliberately. `false` removes the role's wrapper.
 
 ## Credential scopes

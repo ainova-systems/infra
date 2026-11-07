@@ -154,6 +154,25 @@ dev_workstation__gh_scope_of: >-
   {%- endfor -%}
   {{ out }}
 
+# Per account with a gh scope, its other github scopes on the same host that cover one owner
+# (https://<host>/<owner>), as owner=scope words: the gh wrapper picks the token for that owner's repositories
+# the way the Git helpers pick it by URL.
+dev_workstation__gh_routes_of: >-
+  {%- set out = {} -%}
+  {%- for name, chosen in dev_workstation__gh_scope_of.items() -%}
+  {%-   set routes = [] -%}
+  {%-   for scope in dev_workstation__scopes[name] | default([]) | selectattr('kind', 'equalto', 'github') -%}
+  {%-     set owner = scope.url | lower | regex_replace('^https://' ~ (chosen.host | regex_escape) ~ '/([^/]+)/?$', '\\1') -%}
+  {%-     if scope.name != chosen.name and owner != (scope.url | lower) -%}
+  {%-       set _ = routes.append(owner ~ '=' ~ scope.name) -%}
+  {%-     endif -%}
+  {%-   endfor -%}
+  {%-   set _ = out.update({name: routes | join(' ')}) -%}
+  {%- endfor -%}
+  {{ out }}
+# The real GitHub CLI the wrapper runs.
+dev_workstation__gh_real: /usr/bin/gh
+
 # The authorized_keys file of the current account (loop_var dev_workstation_account), exactly the declared keys,
 # one per line. The newline is built in a statement: escapes in a bare expression stay literal.
 dev_workstation__authorized_keys_content: >-

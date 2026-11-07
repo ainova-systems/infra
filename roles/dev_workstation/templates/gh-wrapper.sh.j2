@@ -1,21 +1,65 @@
 #!/bin/sh
 # {{ ansible_managed }}
 # Managed by the dev_workstation role.
-# GitHub CLI with the calling account's own token for its gh scope, read from the token file that scope's Git
-# credential helper reads (agent-auth <scope> stores it). The token reaches gh's environment only: nothing is
-# exported to the shell, written to disk or logged, and gh's own login file stays unused. A token already in
-# the environment wins; a missing, linked, shared or malformed file leaves gh unauthenticated.
+# GitHub CLI with the calling account's own token, read from the token file the matching scope's Git credential
+# helper reads (agent-auth <scope> stores it). The scope is the one covering the repository's owner, as Git
+# chooses by URL: the owner of -R/--repo, of an `api repos/<owner>/...` path, or of the current checkout's origin;
+# GH_SCOPE=<scope> names one of the account's scopes explicitly; otherwise the account's gh scope. The token
+# reaches gh's environment only: nothing is exported to the shell, written to disk or logged, and gh's own login
+# file stays unused. A token already in the environment wins; a missing, linked, shared or malformed file leaves
+# gh unauthenticated.
 set -eu
-real=/usr/bin/gh
+real={{ dev_workstation__gh_real }}
+
+# The lowercase owner in a repository reference: OWNER/REPO, HOST/OWNER/REPO, an HTTPS or SSH URL.
+owner_of_ref() {
+  ref=${1#https://}; ref=${ref#http://}; ref=${ref#ssh://}; ref=${ref#git@}
+  case $ref in
+    "$host"/*) ref=${ref#"$host"/} ;;
+    "$host":*) ref=${ref#"$host":} ;;
+  esac
+  printf '%s' "${ref%%/*}" | tr 'A-Z' 'a-z'
+}
+
+# The owner of the repository this gh call acts on, or nothing.
+owner_of_call() {
+  expect=
+  for arg in "$@"; do
+    if [ -n "$expect" ]; then owner_of_ref "$arg"; return 0; fi
+    case $arg in
+      -R|--repo) expect=1 ;;
+      --repo=*) owner_of_ref "${arg#--repo=}"; return 0 ;;
+      repos/*/*|/repos/*/*) path=${arg#/}; path=${path#repos/}; printf '%s' "${path%%/*}" | tr 'A-Z' 'a-z'; return 0 ;;
+    esac
+  done
+  origin=$(git config --get remote.origin.url 2>/dev/null) || origin=
+  if [ -n "$origin" ]; then owner_of_ref "$origin"; fi
+}
+
 if [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}${GH_ENTERPRISE_TOKEN:-}${GITHUB_ENTERPRISE_TOKEN:-}" ]; then
   account=$(id -un)
   scope=
   host=
+  routes=
   case $account in
 {% for account, chosen in dev_workstation__gh_scope_of | dictsort %}
-    {{ account }}) scope={{ chosen.name }}; host={{ chosen.host }} ;;
+    {{ account }}) scope={{ chosen.name }}; host={{ chosen.host }}; routes='{{ dev_workstation__gh_routes_of[account] | default('') }}' ;;
 {% endfor %}
   esac
+  if [ -n "$scope" ] && [ -n "$routes" ]; then
+    if [ -n "${GH_SCOPE:-}" ]; then
+      wanted=$GH_SCOPE
+    else
+      owner=$(owner_of_call "$@")
+      wanted=
+      for route in $routes; do
+        if [ "${route%%=*}" = "$owner" ]; then wanted=${route#*=}; fi
+      done
+    fi
+    for route in $routes; do
+      if [ "${route#*=}" = "$wanted" ]; then scope=$wanted; fi
+    done
+  fi
   if [ -n "$scope" ]; then
     home=$(getent passwd "$account" | cut -d: -f6)
     file=$home/.config/git-credentials/$scope.env
