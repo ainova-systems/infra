@@ -49,6 +49,21 @@
       {{ dict(container_engine__passwd.results | selectattr('rc', 'equalto', 0) | map(attribute='item')
          | zip(container_engine__passwd.results | selectattr('rc', 'equalto', 0) | map(attribute='stdout')
                | map('split', ':') | map(attribute=2))) }}
+    # The same clean environment as the role's account helper, built here so the check never
+    # depends on a file the role installs: on a host the role has not applied yet it still reads
+    # the real daemon state instead of reporting every daemon as down.
+    container_engine__probe_prefix: >-
+      {%- set out = {} -%}
+      {%- for r in container_engine__passwd.results if r.rc == 0 -%}
+      {%- set f = r.stdout.split(':') -%}
+      {%- set _ = out.update({r.item: ['runuser', '-u', r.item, '--', 'env', '-i',
+            'HOME=' ~ f[5], 'USER=' ~ r.item, 'LOGNAME=' ~ r.item,
+            'PATH=' ~ f[5] ~ '/.local/bin:/usr/local/bin:/usr/bin:/bin',
+            'XDG_RUNTIME_DIR=/run/user/' ~ f[2],
+            'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' ~ f[2] ~ '/bus',
+            'DOCKER_HOST=unix:///run/user/' ~ f[2] ~ '/docker.sock']}) -%}
+      {%- endfor -%}
+      {{ out }}
   block:
     - name: Read rootless sockets
       ansible.builtin.stat:
@@ -58,7 +73,7 @@
 
     - name: Read rootless daemon unit state
       ansible.builtin.command:
-        argv: ["{{ container_engine__as_account }}", "{{ item }}", systemctl, --user, is-enabled, docker.service]
+        argv: "{{ container_engine__probe_prefix[item] + ['systemctl', '--user', 'is-enabled', 'docker.service'] }}"
       loop: "{{ container_engine__present }}"
       register: container_engine__user_enabled
       changed_when: false
@@ -67,7 +82,7 @@
 
     - name: Read rootless daemon information
       ansible.builtin.command:
-        argv: ["{{ container_engine__as_account }}", "{{ item }}", docker, info, --format, json]
+        argv: "{{ container_engine__probe_prefix[item] + ['docker', 'info', '--format', 'json'] }}"
       loop: "{{ container_engine__present }}"
       register: container_engine__user_info
       changed_when: false
@@ -76,7 +91,7 @@
 
     - name: Read rootless Compose
       ansible.builtin.command:
-        argv: ["{{ container_engine__as_account }}", "{{ item }}", docker, compose, version]
+        argv: "{{ container_engine__probe_prefix[item] + ['docker', 'compose', 'version'] }}"
       loop: "{{ container_engine__present }}"
       register: container_engine__user_compose
       changed_when: false
@@ -170,5 +185,6 @@
          else ('' if (container_engine__rootful_config.stdout | from_json).get('log-opts', {}).get('max-size') == container_engine_log_max_size
          else 'system daemon log rotation differs;'))) }}
     container_engine__failures: >-
-      {{ (container_engine__pkg_failures ~ container_engine__account_failures ~ container_engine__timer_failures
-          ~ container_engine__rootful_config_failures).split(';') | map('trim') | select | list }}
+      {{ ((container_engine__pkg_failures | default('', true)) ~ (container_engine__account_failures | default('', true))
+          ~ (container_engine__timer_failures | default('', true)) ~ (container_engine__rootful_config_failures | default('', true))
+         ).split(';') | map('trim') | select | list }}

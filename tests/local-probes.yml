@@ -44,3 +44,20 @@
               - role_checks__failures | select('search', 'probe control failed') | list | length == 2
               - ansible_failed_task.name == 'Assert every role check passed'
             fail_msg: "role_checks recorded {{ role_checks__failures | default([]) }}"
+
+- name: Keep the empty-template rule the checks rely on
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    local_probes_nothing: []
+    # A block template that renders nothing is None, not '', on ansible-core 2.19+; every
+    # accumulator of failure text is read through default('', true) for that reason.
+    local_probes_accumulated: >-
+      {%- for r in local_probes_nothing -%}{{ r }};{%- endfor -%}
+  tasks:
+    - name: Assert an empty accumulator reads as an empty string through default
+      ansible.builtin.assert:
+        that:
+          - (local_probes_accumulated | default('', true)) == ''
+          - ('x' ~ (local_probes_accumulated | default('', true))) == 'x'

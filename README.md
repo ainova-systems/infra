@@ -49,7 +49,7 @@ The project pins this collection by tag next to the exact versions of its depend
 collections:
   - name: https://github.com/ainova-systems/infra-ansible.git
     type: git
-    version: v0.3.0
+    version: v0.3.1
   - name: devsec.hardening
     version: 11.0.0
   - name: community.docker

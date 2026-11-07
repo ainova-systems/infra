@@ -111,7 +111,8 @@
            else ['sshd AllowUsers lacks the admin'])
         + ([] if host_base__ufw.stdout is search('(?m)^Status: active$') else ['firewall inactive'])
         + ([] if host_base__ufw.stdout is search('Default: deny \(incoming\)') else ['firewall inbound default is not deny'])
-        + ([] if host_base__missing_rules == '' else ['firewall lacks allows: ' ~ host_base__missing_rules | regex_replace(',$', '')])
+        + ([] if (host_base__missing_rules | default('', true)) == ''
+           else ['firewall lacks allows: ' ~ host_base__missing_rules | regex_replace(',$', '')])
         + ([] if not host_base_auto_updates | bool or host_base__apt_periodic.stdout is search('Unattended-Upgrade "1"')
            else ['unattended upgrades not scheduled'])
         + ([] if not host_base_auto_updates | bool or host_base__uu_enabled.stdout | trim == 'enabled' else ['unattended-upgrades service not enabled'])

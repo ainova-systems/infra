@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-07
+
+### Fixed
+
+- `container_engine`: the check reads rootless daemons without the role's own helper, so a host the role has not applied yet no longer reports every daemon as down.
+- `container_engine`, `host_base`: an empty failure list no longer renders as `None`, which reported a false failure on every passing host and blocked an apply whose packages matched the pin.
+
 ## [0.3.0] - 2026-11-07
 
 ### Added

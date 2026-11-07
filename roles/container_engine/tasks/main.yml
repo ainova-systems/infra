@@ -10,9 +10,9 @@
 - name: Assert installed engine matches the pin
   ansible.builtin.assert:
     that:
-      - container_engine_allow_upgrade | bool or container_engine__drift == ''
+      - container_engine_allow_upgrade | bool or (container_engine__drift | default('', true)) == ''
     fail_msg: >-
-      Installed engine packages differ from the pin ({{ container_engine__drift | regex_replace(', $', '') }}).
+      Installed engine packages differ from the pin ({{ container_engine__drift | default('', true) | regex_replace(', $', '') }}).
       Review the change and set container_engine_allow_upgrade for that run; upgrading restarts every container.
     quiet: true
   vars:

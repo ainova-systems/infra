@@ -18,6 +18,9 @@ Every role must pass one test: **would a second project need the same behaviour 
 - Every variable starts with the role name and is documented in `defaults/main.yml` and the role README; derived values use the `<role>__` prefix in `vars/main.yml`.
 - Versions are pinned in defaults: no `latest`, no `state: latest`; images by tag and digest where available.
 - Fully qualified module names everywhere; the production profile of `.ansible-lint` applies.
+- A check reads the host with tools the platform ships, never with a file its own role installs, so it reports real state on a host the role has not applied yet.
+- A block template that can render nothing is `None` on ansible-core 2.19+, not `''`: read every such accumulator through `default('', true)`.
+- A probe command a check runs is exercised by `tests/local-probes.yml` when the control node can run it.
 
 ## Workflow
 
