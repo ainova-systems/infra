@@ -1,6 +1,21 @@
 ---
 # Internal, lazily evaluated values. Not inputs: set the documented variables in defaults/main.yml instead.
 
+# Instance keys an entry may carry; anything else is refused.
+github_actions_runner__instance_keys: [name, labels, cpus, memory, state, volume, adopt, image, env, deregister, purge]
+
+# A digest-pinned image reference: <registry>/<repo>[:<tag>]@sha256:<64 hex>.
+github_actions_runner__image_pattern: '^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?@sha256:[a-f0-9]{64}$'
+
+# Container environment keys: well formed, and never naming a secret.
+github_actions_runner__env_key_pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+github_actions_runner__secret_key_pattern: '(?i)(token|secret|passw|key|credential)'
+
+github_actions_runner__rootless: "{{ github_actions_runner_daemon == 'rootless' }}"
+
+# Boot configuration of br_netfilter, owned by this role (rootless mode).
+github_actions_runner__modules_load_file: /etc/modules-load.d/github-actions-runner.conf
+
 # Instances that hold capacity on the host (every state except absent).
 github_actions_runner__active: >-
   {{ (github_actions_runner_instances | rejectattr('state', 'defined') | list)
@@ -14,24 +29,122 @@ github_actions_runner__volumes: >-
   {%- endfor -%}
   {{ ns.volumes }}
 
+# Rootless account, from its passwd entry (tasks/validate.yml). Valid in rootless mode only.
+github_actions_runner__account_fields: "{{ github_actions_runner__account_entry.stdout.split(':') }}"
+github_actions_runner__account_uid: "{{ github_actions_runner__account_fields[2] }}"
+github_actions_runner__account_gid: "{{ github_actions_runner__account_fields[3] }}"
+github_actions_runner__account_home: "{{ github_actions_runner__account_fields[5] }}"
+
+# Socket the runners mount and every Docker command of the role talks to.
+github_actions_runner__socket_path: >-
+  {{ ('/run/user/' ~ github_actions_runner__account_uid ~ '/docker.sock')
+     if github_actions_runner__rootless else github_actions_runner_docker_socket }}
+github_actions_runner__docker_host: "unix://{{ github_actions_runner__socket_path }}"
+
+# Rootless: run a command as the account against its own daemon with a clean environment (the one
+# container_engine's check builds), built here so no probe depends on a file any role installs. PATH
+# leaves out the account's own bin directories. Rootful: no prefix, the command runs as root.
+github_actions_runner__as_account: >-
+  {{ ['runuser', '-u', github_actions_runner_account, '--', 'env', '-i',
+      'HOME=' ~ github_actions_runner__account_home,
+      'USER=' ~ github_actions_runner_account, 'LOGNAME=' ~ github_actions_runner_account,
+      'PATH=/usr/local/bin:/usr/bin:/bin',
+      'XDG_RUNTIME_DIR=/run/user/' ~ github_actions_runner__account_uid,
+      'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' ~ github_actions_runner__account_uid ~ '/bus',
+      'DOCKER_HOST=' ~ github_actions_runner__docker_host]
+     if github_actions_runner__rootless else [] }}
+github_actions_runner__docker: "{{ github_actions_runner__as_account + ['docker'] }}"
+
+# Identity and environment of the community.docker tasks (become_user in rootless mode).
+github_actions_runner__module_user: "{{ github_actions_runner_account if github_actions_runner__rootless else 'root' }}"
+github_actions_runner__module_env: >-
+  {{ {'XDG_RUNTIME_DIR': '/run/user/' ~ github_actions_runner__account_uid,
+      'DOCKER_HOST': github_actions_runner__docker_host}
+     if github_actions_runner__rootless else {} }}
+
+# Definitions are root-owned in both modes; rootless definitions are readable by the account's group.
+github_actions_runner__def_gid: "{{ (github_actions_runner__account_gid | int) if github_actions_runner__rootless else 0 }}"
+github_actions_runner__dir_mode: "{{ '0750' if github_actions_runner__rootless else '0700' }}"
+github_actions_runner__file_mode: "{{ '0640' if github_actions_runner__rootless else '0600' }}"
+
+# Rootless socket probe: connects to the socket, reads the listening daemon's credentials (SO_PEERCRED,
+# exact even while nested daemons of jobs run) and that daemon's GID map, and prints JSON only. Runs as
+# the account; tests/local-probes.yml runs the same script against a local listener.
+github_actions_runner__socket_probe: |
+  import json, os, socket, struct, sys
+  path = sys.argv[1]
+  peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  peer.settimeout(10)
+  peer.connect(path)
+  pid, uid, gid = struct.unpack('3i', peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i')))
+  peer.close()
+  with open('/proc/%d/gid_map' % pid) as stream:
+      gid_map = stream.read()
+  print(json.dumps({'pid': pid, 'uid': uid, 'socket_gid': os.stat(path).st_gid, 'gid_map': gid_map}))
+github_actions_runner__socket_peer: >-
+  {{ (github_actions_runner__socket_probe_result.stdout | default('{}', true) | from_json)
+     if (github_actions_runner__socket_probe_result.rc | default(1)) == 0 else {} }}
+# The socket's group as the daemon's namespace sees it. A rootless socket's host group is a subordinate
+# GID, not the group a runner inside that namespace joins. -1 unless the GID map maps it exactly once.
+github_actions_runner__namespace_gid: >-
+  {%- set ns = namespace(found=[]) -%}
+  {%- set host_gid = github_actions_runner__socket_peer.socket_gid | default(-1) | int -%}
+  {%- for line in (github_actions_runner__socket_peer.gid_map | default('')).splitlines() -%}
+  {%-   set f = line.split() -%}
+  {%-   if f | length == 3 and (f[1] | int) <= host_gid and host_gid < (f[1] | int) + (f[2] | int) -%}
+  {%-     set ns.found = ns.found + [(f[0] | int) + host_gid - (f[1] | int)] -%}
+  {%-   endif -%}
+  {%- endfor -%}
+  {{ ns.found[0] if ns.found | length == 1 else -1 }}
+# Group a runner joins to use the mounted socket.
+github_actions_runner__socket_gid: >-
+  {{ (github_actions_runner__namespace_gid | int) if github_actions_runner__rootless
+     else github_actions_runner__socket.stat.gid }}
+
 # Per-instance values; valid inside the instance loops (loop_var github_actions_runner_instance).
 github_actions_runner__name: "{{ github_actions_runner_instance.name }}"
 github_actions_runner__state: "{{ github_actions_runner_instance.state | default('present') }}"
 github_actions_runner__volume: "{{ github_actions_runner_instance.volume | default(github_actions_runner_instance.name ~ '-data') }}"
 github_actions_runner__adopt: "{{ github_actions_runner_instance.adopt | default(false) | bool }}"
+github_actions_runner__image: "{{ github_actions_runner_instance.image | default(github_actions_runner_image) }}"
+github_actions_runner__env: "{{ github_actions_runner_extra_env | combine(github_actions_runner_instance.env | default({})) }}"
 github_actions_runner__deregister: "{{ github_actions_runner_instance.deregister | default(true) | bool }}"
 github_actions_runner__purge: "{{ github_actions_runner_instance.purge | default(false) | bool }}"
 github_actions_runner__dir: "{{ github_actions_runner_base_dir }}/{{ github_actions_runner_instance.name }}"
 github_actions_runner__definition: "{{ github_actions_runner__dir }}/compose.yml"
 github_actions_runner__labels: "{{ (github_actions_runner_instance.labels + github_actions_runner_common_labels) | unique | join(',') }}"
 
+# Identity of the definition without its CPU and memory limits: the container carries it as the label
+# infra.identity. A container whose identity is current changes its limits in place (docker update); any
+# other definition change recreates it.
+github_actions_runner__identity: >-
+  {{ lookup('ansible.builtin.template', 'compose.yml.j2',
+            template_vars={'github_actions_runner__identity_render': true}) | hash('sha256') }}
+github_actions_runner__nano_cpus: "{{ (github_actions_runner_instance.cpus * 1000000000) | int }}"
+github_actions_runner__memory_bytes: "{{ github_actions_runner_instance.memory * 1048576 }}"
+
 # Probe results (tasks/probe.yml), interpreted.
 github_actions_runner__volume_exists: "{{ github_actions_runner__volume_info.rc == 0 }}"
 github_actions_runner__mountpoint: >-
   {{ (github_actions_runner__volume_info.stdout | from_json)[0].Mountpoint if github_actions_runner__volume_info.rc == 0 else '' }}
+# Rootless: the volume lives under the account's home, so its files are read as the account, never followed
+# as root; stat prints "<path><TAB><type>" per file present. Rootful: stat as root under the root-owned data root.
+github_actions_runner__volume_files_argv: [stat, --printf, '%n\t%F\n', --]
+github_actions_runner__volume_file_types: >-
+  {%- set out = {} -%}
+  {%- for line in github_actions_runner__volume_files.stdout_lines | default([]) if line.split('\t') | length == 2 -%}
+  {%-   set _ = out.update({line.split('\t')[0] | basename: line.split('\t')[1]}) -%}
+  {%- endfor -%}
+  {{ out }}
+github_actions_runner__runner_present: >-
+  {{ ('.runner' in github_actions_runner__volume_file_types) if github_actions_runner__rootless
+     else (github_actions_runner__runner_file.stat.exists | default(false)) }}
+github_actions_runner__credentials_present: >-
+  {{ ('.credentials' in github_actions_runner__volume_file_types) if github_actions_runner__rootless
+     else (github_actions_runner__credentials_file.stat.exists | default(false)) }}
 github_actions_runner__registered: >-
-  {{ (github_actions_runner__runner_file.stat.exists | default(false))
-     and (github_actions_runner__credentials_file.stat.exists | default(false)) }}
+  {{ github_actions_runner__volume_exists and (github_actions_runner__runner_present | bool)
+     and (github_actions_runner__credentials_present | bool) }}
 github_actions_runner__container_exists: "{{ github_actions_runner__container_info.rc == 0 }}"
 github_actions_runner__container: >-
   {{ (github_actions_runner__container_info.stdout | from_json)[0] if github_actions_runner__container_info.rc == 0 else {} }}
@@ -41,6 +154,25 @@ github_actions_runner__busy: >-
   {{ github_actions_runner__running and ('Runner.Worker' in (github_actions_runner__processes.stdout | default(''))) }}
 github_actions_runner__managed: >-
   {{ (github_actions_runner__container.Config.Labels | default({}, true)).get('infra.managed-by', '') == 'github_actions_runner' }}
+github_actions_runner__foreign: "{{ github_actions_runner__container_exists and not github_actions_runner__managed }}"
+github_actions_runner__identity_current: >-
+  {{ github_actions_runner__container_exists and github_actions_runner__managed
+     and (github_actions_runner__container.Config.Labels | default({}, true)).get('infra.identity', '')
+         == github_actions_runner__identity }}
+github_actions_runner__resources_current: >-
+  {{ (github_actions_runner__container.HostConfig.NanoCpus | default(-1)) == (github_actions_runner__nano_cpus | int)
+     and (github_actions_runner__container.HostConfig.Memory | default(-1)) == (github_actions_runner__memory_bytes | int)
+     and (github_actions_runner__container.HostConfig.MemorySwap | default(-1)) == (github_actions_runner__memory_bytes | int) }}
+# Lowering a limit under a running job can end it (out of memory), so it waits for an idle runner; raising never does.
+github_actions_runner__resources_lowered: >-
+  {{ (github_actions_runner__container.HostConfig.NanoCpus | default(0)) > (github_actions_runner__nano_cpus | int)
+     or (github_actions_runner__container.HostConfig.Memory | default(0)) > (github_actions_runner__memory_bytes | int) }}
+# A foreign container that mounts the instance's volume at the runner directory: the earlier runner of that
+# registration, which adopt: true replaces while it is idle.
+github_actions_runner__holds_volume: >-
+  {{ github_actions_runner__container.Mounts | default([], true)
+     | selectattr('Destination', 'equalto', github_actions_runner_data_path)
+     | selectattr('Name', 'defined') | selectattr('Name', 'equalto', github_actions_runner__volume) | list | length == 1 }}
 
 # Throwaway-container wrapper: read the token from stdin into the variable config.sh reads, then exec config.sh.
 github_actions_runner__stdin_exec: 'IFS= read -r ACTIONS_RUNNER_INPUT_TOKEN && export ACTIONS_RUNNER_INPUT_TOKEN && exec "$0" "$@"'

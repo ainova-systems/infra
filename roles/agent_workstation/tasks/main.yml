@@ -15,20 +15,37 @@
     that:
       - agent_workstation_accounts | length > 0
       - agent_workstation_accounts | map(attribute='name') | unique | length == agent_workstation_accounts | length
+      - agent_workstation_coding_cli_mode in ['pinned', 'external']
+      - >-
+        agent_workstation_coding_cli_mode == 'pinned'
+        or agent_workstation_enabled_tools | intersect(agent_workstation__coding_tools) | length == 0
+      - agent_workstation_service_tokens is sequence and agent_workstation_service_tokens is not string
       - agent_workstation_enabled_tools | difference(agent_workstation_tools.keys() | list) | length == 0
       - agent_workstation_enabled_tools | difference(agent_workstation_tool_sources.keys() | list) | length == 0
       - agent_workstation_root is match('^/[A-Za-z0-9._/-]+$')
       - agent_workstation_playwright_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
       - agent_workstation_playwright_integrity is match('^sha512-[A-Za-z0-9+/]+=*$')
-    fail_msg: agent_workstation inputs are incomplete or inconsistent; see the role README
+    fail_msg: >-
+      agent_workstation inputs are incomplete or inconsistent (in external coding-CLI mode no coding-agent CLI may be
+      enabled here); see the role README
     quiet: true
 
-- name: Assert account names
+- name: Assert account entries
   ansible.builtin.assert:
     that:
+      - item is mapping
+      - item.keys() | difference(agent_workstation__account_keys) | length == 0
       - item.name is match('^[a-z_][a-z0-9_-]*$')
       - item.name != 'root'
-    fail_msg: "invalid coding account name: {{ item.name | default('') }}"
+      - >-
+        agent_workstation__workspace_of[item.name] == ''
+        or (agent_workstation__workspace_of[item.name] is string
+            and agent_workstation__workspace_of[item.name] is match(agent_workstation__workspace_pattern)
+            and agent_workstation__workspace_of[item.name] is not search('(^|/)\.\.?(/|$)'))
+      - item.service_tokens | default([]) is sequence and item.service_tokens | default([]) is not string
+    fail_msg: >-
+      account entry {{ item.name | default('') }} is invalid: keys {{ agent_workstation__account_keys | join(', ') }}
+      only, a lowercase non-root name, and a workspace that is an absolute path without . or .. segments
     quiet: true
   loop: "{{ agent_workstation_accounts }}"
   loop_control:
@@ -64,6 +81,26 @@
   loop_control:
     label: "{{ item.name }}"
 
+- name: Assert service tokens
+  ansible.builtin.assert:
+    that:
+      - tokens | select('mapping') | list | length == tokens | length
+      - tokens | map('list') | flatten | unique | difference(agent_workstation__service_token_keys) | length == 0
+      - tokens | map(attribute='name', default='') | map('string') | reject('match', '^[a-z0-9][a-z0-9-]{0,31}$') | list | length == 0
+      - tokens | map(attribute='env_name', default='') | map('string') | reject('match', agent_workstation__secret_env_pattern) | list | length == 0
+      - tokens | map(attribute='name') | unique | list | length == tokens | length
+      - tokens | map(attribute='name') | intersect(agent_workstation__reserved_scopes) | length == 0
+      - tokens | map(attribute='name') | intersect(agent_workstation__scopes[item.name] | default([]) | map(attribute='name')) | length == 0
+    fail_msg: >-
+      service tokens of {{ item.name }} need unique kebab-case names that are neither a credential scope nor an
+      agent-auth verb, and an upper-case env_name; no other key
+    quiet: true
+  vars:
+    tokens: "{{ agent_workstation__service_tokens_of[item.name] | default([]) }}"
+  loop: "{{ agent_workstation_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 - name: Assert tool pins
   ansible.builtin.assert:
     that:
@@ -80,15 +117,21 @@
   loop_control:
     label: "{{ item.name }}"
 
+# pinned: each integration's CLI is one this role installs. external: the CLI comes from another role and is
+# resolved on the account's PATH before its integration is installed (tasks/account.yml).
 - name: Assert Herdr integrations have their CLIs
   ansible.builtin.assert:
     that:
       - "'herdr' in agent_workstation_enabled_tools"
+      - agent_workstation_herdr_integrations | difference(agent_workstation__herdr_runtime_tools.keys() | list) | length == 0
       - >-
-        agent_workstation_herdr_integrations
-        | map('extract', agent_workstation__herdr_runtime_tools)
-        | difference(agent_workstation_enabled_tools) | length == 0
-    fail_msg: every Herdr integration needs herdr and the matching CLI enabled
+        agent_workstation_coding_cli_mode == 'external'
+        or agent_workstation_herdr_integrations
+           | map('extract', agent_workstation__herdr_runtime_tools)
+           | difference(agent_workstation_enabled_tools) | length == 0
+    fail_msg: >-
+      every Herdr integration needs herdr enabled and a known runtime ({{ agent_workstation__herdr_runtime_tools.keys()
+      | join(', ') }}); in pinned mode also the matching CLI enabled here
     quiet: true
   when: agent_workstation_herdr_service or agent_workstation_herdr_integrations | length > 0
 
@@ -217,13 +260,14 @@
     group: root
     mode: "0755"
 
-- name: Write credential scopes for agent-auth
+- name: Write credential scopes and service token names for agent-auth
   ansible.builtin.template:
-    src: credential-scopes.json.j2
-    dest: "{{ agent_workstation_config_dir }}/credential-scopes.json"
+    src: "{{ item }}.j2"
+    dest: "{{ agent_workstation_config_dir }}/{{ item }}"
     owner: root
     group: root
     mode: "0644"
+  loop: [credential-scopes.json, service-tokens.json]
 
 - name: Configure coding accounts
   ansible.builtin.include_tasks: account.yml

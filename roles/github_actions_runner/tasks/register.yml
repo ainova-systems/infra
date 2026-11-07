@@ -1,7 +1,8 @@
 ---
 # Register one instance whose data volume holds no registration. The token travels in the module payload, then
 # on stdin into a throwaway container, where config.sh reads it from ACTIONS_RUNNER_INPUT_TOKEN. It never
-# appears in a file, a container definition, a process argument or the host environment.
+# appears in a file, a container definition, a process argument or the host environment. In rootless mode the
+# Compose client runs as the runner account (runuser passes stdin through unchanged).
 
 - name: Prompt for a registration token
   ansible.builtin.pause:
@@ -38,7 +39,7 @@
 - name: Register with the forge {{ github_actions_runner__name }}
   ansible.builtin.command:
     argv: >-
-      {{ ['docker', 'compose', '--project-directory', github_actions_runner__dir,
+      {{ github_actions_runner__docker + ['compose', '--project-directory', github_actions_runner__dir,
           '--file', github_actions_runner__definition,
           'run', '--rm', '--no-deps', '-T', '--entrypoint', '/bin/sh', 'runner',
           '-c', github_actions_runner__stdin_exec, github_actions_runner_data_path ~ '/config.sh',

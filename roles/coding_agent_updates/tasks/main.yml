@@ -1,0 +1,136 @@
+---
+# Apply. Idempotent and fail-closed: inputs are asserted before the first change. The first apply runs the
+# updater once, so every CLI has a current selection before the accounts link to it.
+
+- name: Validate host and inputs
+  ansible.builtin.include_tasks: assert.yml
+
+- name: Install updater prerequisites
+  ansible.builtin.apt:
+    # acl lets Ansible run the account link tasks as each unprivileged account.
+    name: [acl, ca-certificates, curl, gnupg, jq, tar]
+    state: present
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the role directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ coding_agent_updates_root }}"
+    - "{{ coding_agent_updates_root }}/current"
+    - "{{ coding_agent_updates_state_dir }}"
+    - "{{ coding_agent_updates_wrapper_dir }}"
+    - "{{ coding_agent_updates_command | dirname }}"
+    - /etc/apt/keyrings
+
+- name: Trust the signing key of the apt-kind CLIs
+  when: coding_agent_updates__uses_apt | bool
+  block:
+    - name: Download the signing key candidate
+      ansible.builtin.get_url:
+        url: "{{ coding_agent_updates_claude_key_url }}"
+        dest: "{{ coding_agent_updates__key_candidate }}"
+        owner: root
+        group: root
+        mode: "0644"
+        force: true
+      changed_when: false
+
+    - name: Read the candidate's primary fingerprints
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          gpg --batch --no-default-keyring --show-keys --with-colons "$KEY"
+          | awk -F: '$1=="pub"{want=1;next} $1=="fpr" && want {print $10;want=0}' | sort
+        executable: /bin/bash
+      environment:
+        KEY: "{{ coding_agent_updates__key_candidate }}"
+      register: coding_agent_updates__key_listing
+      changed_when: false
+      check_mode: false
+
+    - name: Assert the candidate is the pinned key
+      ansible.builtin.assert:
+        that:
+          - coding_agent_updates__key_listing.stdout_lines == [coding_agent_updates_claude_key_fingerprint]
+        fail_msg: >-
+          The signing key at {{ coding_agent_updates_claude_key_url }} is not {{ coding_agent_updates_claude_key_fingerprint }};
+          nothing was trusted.
+        quiet: true
+
+    - name: Install the verified key
+      ansible.builtin.copy:
+        src: "{{ coding_agent_updates__key_candidate }}"
+        dest: "{{ coding_agent_updates__keyring }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Install the updater and its units
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop: "{{ coding_agent_updates__files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  register: coding_agent_updates__units
+
+- name: Verify the units
+  ansible.builtin.command:
+    argv:
+      - systemd-analyze
+      - verify
+      - "/etc/systemd/system/{{ coding_agent_updates__unit }}.service"
+      - "/etc/systemd/system/{{ coding_agent_updates__unit }}.timer"
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Install the launch wrappers
+  ansible.builtin.template:
+    src: wrapper.sh.j2
+    dest: "{{ coding_agent_updates_wrapper_dir }}/{{ item.command }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ coding_agent_updates__commands }}"
+  loop_control:
+    label: "{{ item.command }}"
+
+- name: Read the update ledger
+  ansible.builtin.stat:
+    path: "{{ coding_agent_updates_state_dir }}/last-success"
+  register: coding_agent_updates__last_success
+
+# A failed first run stops the apply: no account links to a CLI that was never published.
+- name: Run the first update
+  ansible.builtin.command:
+    argv: ["{{ coding_agent_updates_command }}"]
+  changed_when: true
+  when:
+    - not coding_agent_updates__last_success.stat.exists
+    - not ansible_check_mode
+
+- name: Enable the update timer
+  ansible.builtin.systemd_service:
+    name: "{{ coding_agent_updates__unit }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: "{{ coding_agent_updates__units is changed }}"
+
+- name: Link the CLIs into each account
+  ansible.builtin.include_tasks: account.yml
+  loop: "{{ coding_agent_updates__passwd.results }}"
+  loop_control:
+    loop_var: coding_agent_updates__entry
+    label: "{{ coding_agent_updates__entry.item }}"

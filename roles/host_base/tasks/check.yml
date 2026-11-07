@@ -74,6 +74,33 @@
   failed_when: false
   check_mode: false
 
+- name: Read the hostname
+  ansible.builtin.command:
+    argv: [hostname]
+  register: host_base__running_hostname
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: host_base_hostname | length > 0
+
+- name: Read the static hostname and host table
+  ansible.builtin.command:
+    argv: [cat, /etc/hostname, /etc/hosts]
+  register: host_base__hostname_files
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: host_base_hostname | length > 0
+
+- name: Read extra package states
+  ansible.builtin.command:
+    argv: "{{ host_base__dpkg_status_argv + host_base_extra_packages }}"
+  register: host_base__extra_packages
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: host_base_extra_packages | length > 0
+
 - name: Assert host_base controls
   ansible.builtin.assert:
     that:
@@ -92,6 +119,10 @@
       {{ r.port }}/{{ r.proto }} from {{ r.from }},
       {%- endif -%}
       {%- endfor -%}
+    host_base__installed_extra: >-
+      {{ host_base__extra_packages.stdout_lines | default([]) | select('match', '^\S+ installed$')
+         | map('split', ' ') | map('first') | list }}
+    host_base__missing_extra: "{{ host_base_extra_packages | difference(host_base__installed_extra) }}"
     host_base__failures: >-
       {{
         ([] if host_base__getent.rc == 0 else ['admin account ' ~ host_base_admin_user ~ ' missing'])
@@ -119,4 +150,14 @@
         + ([] if host_base__time_daemon_state.stdout | trim == 'active' else [host_base__time_daemon ~ ' not active'])
         + ([] if host_base__time.stdout is search('(?m)^NTP=yes$') else ['time sync disabled'])
         + ([] if host_base__time.stdout is search('(?m)^NTPSynchronized=yes$') else ['clock not synchronized'])
+        + ([] if host_base__sshd.stdout is search('(?m)^allowtcpforwarding ' ~ host_base__tcp_forwarding ~ '$')
+           else ['sshd AllowTcpForwarding is not ' ~ host_base__tcp_forwarding])
+        + ([] if host_base_hostname | length == 0
+              or ((host_base__running_hostname.stdout | default('') | trim) == host_base_hostname
+                  and (host_base__hostname_files.stdout_lines | default([]) | first | default('') | trim) == host_base_hostname)
+           else ['hostname is not ' ~ host_base_hostname])
+        + ([] if host_base_hostname | length == 0
+              or host_base__hostname_files.stdout is search('(?m)^' ~ (host_base__hosts_line | regex_escape) ~ '\s*$')
+           else ['/etc/hosts lacks: ' ~ host_base__hosts_line])
+        + ([] if host_base__missing_extra | length == 0 else ['extra packages not installed: ' ~ host_base__missing_extra | join(', ')])
       }}

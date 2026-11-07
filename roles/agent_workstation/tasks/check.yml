@@ -108,6 +108,7 @@
   loop:
     - {path: "{{ agent_workstation_auth_command }}", template: agent-auth.py.j2}
     - {path: "{{ agent_workstation_config_dir }}/credential-scopes.json", template: credential-scopes.json.j2}
+    - {path: "{{ agent_workstation_config_dir }}/service-tokens.json", template: service-tokens.json.j2}
   loop_control:
     label: "{{ item.path }}"
 
@@ -161,5 +162,7 @@
   ansible.builtin.debug:
     msg: >-
       {{ (agent_workstation__auth_required | default([])) | length }} credential scope(s) awaiting the
-      owner: {{ agent_workstation__auth_required | default([]) | join(', ') or 'none' }}.
-      Run agent-auth <scope> inside the named account. This is reported, not failed.
+      owner: {{ agent_workstation__auth_required | default([]) | join(', ') or 'none' }};
+      {{ (agent_workstation__service_required | default([])) | length }} service token(s):
+      {{ agent_workstation__service_required | default([]) | join(', ') or 'none' }}.
+      Run agent-auth <scope> or agent-auth service <name> inside the named account. This is reported, not failed.

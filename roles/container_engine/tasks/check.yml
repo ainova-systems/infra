@@ -128,6 +128,35 @@
       failed_when: false
       check_mode: false
 
+- name: Read other package sources of the engine repository
+  ansible.builtin.command:
+    expand_argument_vars: false
+    argv:
+      - sh
+      - -c
+      - "{{ container_engine__apt_sources_probe }}"
+      - sh
+      - "{{ container_engine__apt_sources_dir }}"
+      - "{{ container_engine_apt_repo_url }}"
+  register: container_engine__apt_sources
+  changed_when: false
+  check_mode: false
+
+- name: Read the rootless login snippet
+  ansible.builtin.stat:
+    path: "{{ container_engine__login_env }}"
+    get_checksum: false
+  register: container_engine__login_env_stat
+
+- name: Read the rootless login snippet content
+  ansible.builtin.command:
+    argv: [cat, --, "{{ container_engine__login_env }}"]
+  register: container_engine__login_env_content
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: container_engine__login_env_wanted | bool
+
 - name: Read cleanup timers
   ansible.builtin.command:
     argv: [systemctl, is-active, "container-engine-cleanup-{{ item }}.timer"]
@@ -184,7 +213,22 @@
          else ('system daemon configuration missing;' if container_engine__rootful_config.rc != 0
          else ('' if (container_engine__rootful_config.stdout | from_json).get('log-opts', {}).get('max-size') == container_engine_log_max_size
          else 'system daemon log rotation differs;'))) }}
+    container_engine__source_failures: >-
+      {%- for file in container_engine__apt_conflicts -%}{{ file }} names the engine repository with another keyring;{%- endfor -%}
+    container_engine__login_failures: >-
+      {%- if container_engine__login_env_wanted | bool -%}
+      {%-   if not (container_engine__login_env_stat.stat.isreg | default(false))
+              or container_engine__login_env_stat.stat.uid != 0 or container_engine__login_env_stat.stat.mode != '0644' -%}
+      rootless login snippet missing or not root-owned 0644;
+      {%-   elif (container_engine__login_env_content.stdout | default('') | trim)
+              != (lookup('ansible.builtin.template', 'rootless-login.sh.j2') | trim) -%}
+      rootless login snippet differs from the role;
+      {%-   endif -%}
+      {%- elif container_engine__login_env_stat.stat.exists -%}
+      rootless login snippet present although disabled;
+      {%- endif -%}
     container_engine__failures: >-
       {{ ((container_engine__pkg_failures | default('', true)) ~ (container_engine__account_failures | default('', true))
           ~ (container_engine__timer_failures | default('', true)) ~ (container_engine__rootful_config_failures | default('', true))
+          ~ (container_engine__source_failures | default('', true)) ~ (container_engine__login_failures | default('', true))
          ).split(';') | map('trim') | select | list }}

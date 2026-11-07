@@ -130,6 +130,42 @@
         mode: "0600"
         force: false
 
+    - name: Resolve the external coding CLIs of {{ agent_workstation__account.name }}
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - env
+          - -i
+          - HOME={{ agent_workstation__home }}
+          - PATH={{ agent_workstation_herdr_path | replace('%h', agent_workstation__home) }}
+          - sh
+          - -c
+          - command -v "$1"
+          - sh
+          - "{{ agent_workstation__herdr_runtime_commands[item] }}"
+      loop: "{{ agent_workstation_herdr_integrations }}"
+      register: agent_workstation__external_clis
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: agent_workstation_coding_cli_mode == 'external'
+
+    - name: Assert the external coding CLIs resolve for {{ agent_workstation__account.name }}
+      ansible.builtin.assert:
+        that:
+          - agent_workstation__missing_clis | length == 0
+        fail_msg: >-
+          {{ agent_workstation__account.name }} has no {{ agent_workstation__missing_clis | join(', ') }} on its Herdr
+          PATH; apply the role that owns the coding CLIs (coding_agent_updates) before agent_workstation.
+        quiet: true
+      vars:
+        agent_workstation__missing_clis: >-
+          {{ agent_workstation__external_clis.results | default([]) | rejectattr('skipped', 'defined')
+             | rejectattr('stdout', 'match', '^/') | map(attribute='item') | list }}
+      when:
+        - agent_workstation_coding_cli_mode == 'external'
+        - not ansible_check_mode
+
     - name: Read Herdr integrations of {{ agent_workstation__account.name }}
       ansible.builtin.command:
         argv: ["{{ agent_workstation__home }}/.local/bin/herdr", integration, status]

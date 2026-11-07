@@ -61,3 +61,564 @@
         that:
           - (local_probes_accumulated | default('', true)) == ''
           - ('x' ~ (local_probes_accumulated | default('', true))) == 'x'
+
+- name: Exercise the github_actions_runner probes and identity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../roles/github_actions_runner/defaults/main.yml
+    - ../roles/github_actions_runner/vars/main.yml
+  vars:
+    local_probes_rootless_map: "         0       1001          1\n         1     100000      65536\n"
+    local_probes_listener: |
+      import socket, sys
+      server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+      server.bind(sys.argv[1])
+      server.listen(1)
+      server.settimeout(30)
+      try:
+          client, _ = server.accept()
+          client.close()
+      except OSError:
+          pass
+  tasks:
+    # Role defaults and vars arrive as vars_files, which outrank play vars: fixtures are facts.
+    - name: Set the runner fixtures
+      ansible.builtin.set_fact:
+        github_actions_runner_scope_url: https://github.com/example-org/example-repo
+        github_actions_runner_image: ghcr.io/example-org/runner:1.0.0@sha256:{{ 'a' * 64 }}
+
+    # These run before any task registers the probe result, which would outrank task variables.
+    - name: Assert the namespace group of a rootless socket
+      ansible.builtin.assert:
+        that:
+          - github_actions_runner__namespace_gid | int == 988
+      vars:
+        github_actions_runner__socket_probe_result:
+          rc: 0
+          stdout: "{{ {'pid': 1, 'uid': 1001, 'socket_gid': 100987, 'gid_map': local_probes_rootless_map} | to_json }}"
+
+    - name: Assert the account group maps to the namespace root group
+      ansible.builtin.assert:
+        that:
+          - github_actions_runner__namespace_gid | int == 0
+      vars:
+        github_actions_runner__socket_probe_result:
+          rc: 0
+          stdout: "{{ {'pid': 1, 'uid': 1001, 'socket_gid': 1001, 'gid_map': local_probes_rootless_map} | to_json }}"
+
+    - name: Assert an unmapped socket group is refused
+      ansible.builtin.assert:
+        that:
+          - github_actions_runner__namespace_gid | int == -1
+      vars:
+        github_actions_runner__socket_probe_result:
+          rc: 0
+          stdout: "{{ {'pid': 1, 'uid': 1001, 'socket_gid': 5, 'gid_map': local_probes_rootless_map} | to_json }}"
+
+    - name: Assert only CPU and memory leave the identity unchanged
+      vars:
+        github_actions_runner__identity_render: true
+        github_actions_runner__socket_gid: 988
+        github_actions_runner__identity: fixture
+        local_probes_template: "{{ playbook_dir }}/../roles/github_actions_runner/templates/compose.yml.j2"
+        local_probes_base: {name: example-build-01, labels: [build], cpus: 4, memory: 8192}
+        local_probes_masked_base: >-
+          {{ lookup('ansible.builtin.template', local_probes_template,
+                    template_vars={'github_actions_runner_instance': local_probes_base}) }}
+        local_probes_masked_limits: >-
+          {{ lookup('ansible.builtin.template', local_probes_template,
+                    template_vars={'github_actions_runner_instance': local_probes_base | combine({'cpus': 2, 'memory': 4096})}) }}
+        local_probes_masked_image: >-
+          {{ lookup('ansible.builtin.template', local_probes_template,
+                    template_vars={'github_actions_runner_instance':
+                      local_probes_base | combine({'image': 'ghcr.io/example-org/runner@sha256:' ~ 'b' * 64})}) }}
+        local_probes_full: >-
+          {{ lookup('ansible.builtin.template', local_probes_template,
+                    template_vars={'github_actions_runner_instance': local_probes_base,
+                                   'github_actions_runner__identity_render': false}) }}
+      ansible.builtin.assert:
+        that:
+          - local_probes_masked_base == local_probes_masked_limits
+          - local_probes_masked_base != local_probes_masked_image
+          - local_probes_masked_base is not search('cpus:|mem_limit:|infra.identity')
+          - >-
+            local_probes_full is search('(?m)^    cpus: 4$')
+          - >-
+            local_probes_full is search('(?m)^      infra.identity: "fixture"$')
+          - >-
+            local_probes_full is search('(?m)^      - "988"$')
+
+    - name: Run the socket and volume probes on scratch files
+      block:
+        - name: Create a scratch directory
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: .runner-probe
+          register: local_probes_dir
+
+        - name: Listen on a scratch socket
+          ansible.builtin.command:
+            argv: [python3, -c, "{{ local_probes_listener }}", "{{ local_probes_dir.path }}/docker.sock"]
+          async: 60
+          poll: 0
+          changed_when: false
+
+        - name: Wait for the scratch socket
+          ansible.builtin.wait_for:
+            path: "{{ local_probes_dir.path }}/docker.sock"
+            timeout: 20
+
+        - name: Run the rootless socket probe
+          ansible.builtin.command:
+            argv: [python3, -c, "{{ github_actions_runner__socket_probe }}", "{{ local_probes_dir.path }}/docker.sock"]
+          register: github_actions_runner__socket_probe_result
+          changed_when: false
+
+        - name: Read the control node user
+          ansible.builtin.command:
+            argv: [id, -u]
+          register: local_probes_uid
+          changed_when: false
+
+        - name: Assert the probe names the listener and maps its group in the initial namespace
+          ansible.builtin.assert:
+            that:
+              - github_actions_runner__socket_peer.uid | int == local_probes_uid.stdout | int
+              - github_actions_runner__socket_peer.pid | int > 0
+              - github_actions_runner__namespace_gid | int == github_actions_runner__socket_peer.socket_gid | int
+            fail_msg: "socket probe printed {{ github_actions_runner__socket_probe_result.stdout }}"
+
+        - name: Write a partial registration
+          ansible.builtin.copy:
+            content: "{}\n"
+            dest: "{{ local_probes_dir.path }}/.runner"
+            mode: "0644"
+
+        - name: Run the volume file probe
+          ansible.builtin.command:
+            argv: >-
+              {{ github_actions_runner__volume_files_argv
+                 + [local_probes_dir.path ~ '/.runner', local_probes_dir.path ~ '/.credentials'] }}
+          register: github_actions_runner__volume_files
+          changed_when: false
+          failed_when: false
+
+        - name: Assert the volume probe sees exactly the present file
+          vars:
+            github_actions_runner_daemon: rootless
+            github_actions_runner__volume_info: {rc: 0, stdout: '[{"Mountpoint": "/unused"}]'}
+          ansible.builtin.assert:
+            that:
+              - >-
+                github_actions_runner__volume_file_types == {'.runner': 'regular file'}
+              - github_actions_runner__runner_present | bool
+              - not github_actions_runner__credentials_present | bool
+              - not github_actions_runner__registered | bool
+            fail_msg: "volume probe printed {{ github_actions_runner__volume_files.stdout_lines }}"
+      always:
+        - name: Remove the scratch directory
+          ansible.builtin.file:
+            path: "{{ local_probes_dir.path }}"
+            state: absent
+          when: local_probes_dir.path is defined
+
+- name: Exercise the package and source probes of host_base, dev_workstation and container_engine
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../roles/host_base/vars/main.yml
+    - ../roles/container_engine/vars/main.yml
+    - ../roles/dev_workstation/defaults/main.yml
+    - ../roles/dev_workstation/vars/main.yml
+  vars:
+    local_probes_url: https://packages.example.invalid/repo
+  tasks:
+    - name: Run the host_base package probe
+      ansible.builtin.command:
+        argv: "{{ host_base__dpkg_status_argv + ['dpkg', 'local-probes-no-such-package'] }}"
+      register: local_probes_host_base_dpkg
+      changed_when: false
+      failed_when: false
+
+    - name: Run the dev_workstation package probe
+      ansible.builtin.command:
+        argv: "{{ dev_workstation__dpkg_status_argv + ['dpkg', 'local-probes-no-such-package'] }}"
+      register: local_probes_dev_dpkg
+      changed_when: false
+      failed_when: false
+
+    - name: Assert the package probes report installed and unknown packages apart
+      ansible.builtin.assert:
+        that:
+          - local_probes_host_base_dpkg.stdout_lines == ['dpkg installed']
+          - local_probes_dev_dpkg.stdout_lines | length == 1
+          - local_probes_dev_dpkg.stdout_lines[0] is match('^dpkg \S+ ok installed$')
+        fail_msg: "got {{ local_probes_host_base_dpkg.stdout_lines }} / {{ local_probes_dev_dpkg.stdout_lines }}"
+
+    - name: Assert the host_base hosts line and the default forwarding
+      vars:
+        host_base_hostname: dev-01.example.invalid
+        host_base_ssh_allow_tcp_forwarding: false
+      ansible.builtin.assert:
+        that:
+          - host_base__hosts_line == '127.0.1.1 dev-01.example.invalid dev-01'
+          - host_base_hostname is match(host_base__hostname_pattern)
+          - "'Dev_01' is not match(host_base__hostname_pattern)"
+          - host_base__tcp_forwarding == 'no'
+
+    - name: Assert forwarding true maps to yes
+      vars:
+        host_base_ssh_allow_tcp_forwarding: true
+      ansible.builtin.assert:
+        that:
+          - host_base__tcp_forwarding == 'yes'
+
+    - name: Assert the legacy string maps to no
+      vars:
+        host_base_ssh_allow_tcp_forwarding: "no"
+      ansible.builtin.assert:
+        that:
+          - host_base__tcp_forwarding == 'no'
+
+    - name: Assert one-way forwarding passes through
+      vars:
+        host_base_ssh_allow_tcp_forwarding: local
+      ansible.builtin.assert:
+        that:
+          - host_base__tcp_forwarding == 'local'
+
+    - name: Find conflicting package sources in a scratch directory
+      block:
+        - name: Create a scratch sources directory
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: .sources-probe
+          register: local_probes_sources
+
+        - name: Write scratch package sources
+          ansible.builtin.copy:
+            content: "{{ item.content }}"
+            dest: "{{ local_probes_sources.path }}/{{ item.name }}"
+            mode: "0644"
+          loop:
+            - {name: own.list, content: "deb [signed-by=/k/own.asc] {{ local_probes_url }} stable main\n"}
+            - {name: same.list, content: "deb [signed-by=/k/own.asc] {{ local_probes_url }} stable main\n"}
+            - {name: other.list, content: "deb [arch=amd64 signed-by=/k/other.gpg] {{ local_probes_url }} stable main\n"}
+            - {name: unsigned.list, content: "deb {{ local_probes_url }}/ stable main\n"}
+            - {name: commented.list, content: "# deb [signed-by=/k/old.gpg] {{ local_probes_url }} stable main\n"}
+            - {name: unrelated.list, content: "deb [signed-by=/k/x.gpg] https://elsewhere.example.invalid/repo stable main\n"}
+            - name: third.sources
+              content: "Types: deb\nURIs: {{ local_probes_url }}\nSuites: stable\nComponents: main\nSigned-By: /k/third.gpg\n"
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: Run the dev_workstation source probe
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv: [sh, -c, "{{ dev_workstation__apt_sources_probe }}", sh, "{{ local_probes_sources.path }}", "{{ item.url }}"]
+          loop:
+            - {list: own.list, url: "{{ local_probes_url }}", key_file: /k/own.asc}
+          register: dev_workstation_apt_sources
+          changed_when: false
+
+        - name: Run the container_engine source probe
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv: [sh, -c, "{{ container_engine__apt_sources_probe }}", sh, "{{ local_probes_sources.path }}", "{{ local_probes_url }}"]
+          register: container_engine__apt_sources
+          changed_when: false
+
+        - name: Assert the probes name the files with another keyring or none
+          vars:
+            container_engine__source_file: /etc/apt/sources.list.d/own.list
+            container_engine__keyring: /k/own.asc
+            local_probes_expected: [other.list, third.sources, unsigned.list]
+          ansible.builtin.assert:
+            that:
+              - dev_workstation__apt_conflicts | map('regex_replace', ' \(.*$', '') | map('basename') | sort == local_probes_expected
+              - container_engine__apt_conflicts | map('basename') | sort == local_probes_expected
+            fail_msg: "got {{ dev_workstation__apt_conflicts }} / {{ container_engine__apt_conflicts }}"
+      always:
+        - name: Remove the scratch sources directory
+          ansible.builtin.file:
+            path: "{{ local_probes_sources.path }}"
+            state: absent
+          when: local_probes_sources.path is defined
+
+- name: Exercise the dev_workstation account logic and templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../roles/dev_workstation/defaults/main.yml
+    - ../roles/dev_workstation/vars/main.yml
+  vars:
+    local_probes_dev_accounts:
+      dev_workstation_dotnet_tools:
+        - {name: dotnet-ef, version: 8.0.11}
+        - {name: other-tool, version: 1.0.0}
+      dev_workstation_accounts:
+        - name: alpha
+          git_name: Alpha
+          git_email: alpha@example.invalid
+          credential_scopes:
+            - {name: shared, url: https://github.com/example-org}
+            - {name: default, url: https://github.com}
+          dotnet_tools:
+            - {name: Dotnet-EF, version: 10.0.0}
+        - name: beta
+          git_name: Beta
+          git_email: beta@example.invalid
+          credential_scopes:
+            - {name: shared, url: https://github.com/example-org}
+            - {name: forge, url: https://forge.example.invalid/team, username: builder}
+        - name: gamma
+          git_name: Gamma
+          git_email: gamma@example.invalid
+          gh_scope: enterprise
+          credential_scopes:
+            - {name: enterprise, url: https://ghe.example.invalid/team, kind: github}
+        - name: delta
+          git_name: Delta
+          git_email: delta@example.invalid
+          credential_scopes:
+            - {name: forge, url: https://forge.example.invalid/team, username: builder}
+      dev_workstation_environment: {OFFICE_PATH: /usr/bin/soffice}
+  tasks:
+    - name: Set the account fixtures
+      ansible.builtin.set_fact:
+        dev_workstation_dotnet_tools: "{{ local_probes_dev_accounts.dev_workstation_dotnet_tools }}"
+        dev_workstation_accounts: "{{ local_probes_dev_accounts.dev_workstation_accounts }}"
+        dev_workstation_environment: "{{ local_probes_dev_accounts.dev_workstation_environment }}"
+
+    - name: Assert per-account .NET tools replace and extend the global list
+      ansible.builtin.assert:
+        that:
+          - >-
+            dev_workstation__dotnet_tools_of.alpha
+            == [{'name': 'other-tool', 'version': '1.0.0'}, {'name': 'Dotnet-EF', 'version': '10.0.0'}]
+          - dev_workstation__dotnet_tools_of.beta == dev_workstation_dotnet_tools
+        fail_msg: "got {{ dev_workstation__dotnet_tools_of }}"
+
+    - name: Assert the gh scope of each account
+      ansible.builtin.assert:
+        that:
+          - >-
+            dev_workstation__gh_scope_of.alpha == {'name': 'default', 'host': 'github.com'}
+          - >-
+            dev_workstation__gh_scope_of.beta == {'name': 'shared', 'host': 'github.com'}
+          - >-
+            dev_workstation__gh_scope_of.gamma == {'name': 'enterprise', 'host': 'ghe.example.invalid'}
+          - "'delta' not in dev_workstation__gh_scope_of"
+        fail_msg: "got {{ dev_workstation__gh_scope_of }}"
+
+    - name: Assert the Intelligence CLI update schedule per mode
+      vars:
+        dev_workstation_intelligence_update_mode: channel
+        dev_workstation_intelligence_update_interval_hours: 4
+      ansible.builtin.assert:
+        that:
+          - dev_workstation__intelligence_on_calendar == '*-*-* 00,04,08,12,16,20:00:00'
+          - dev_workstation__intelligence_unit_version == 'latest'
+
+    - name: Assert the pinned Intelligence CLI schedule is unchanged
+      ansible.builtin.assert:
+        that:
+          - dev_workstation__intelligence_on_calendar == 'weekly'
+          - dev_workstation__intelligence_unit_version == dev_workstation_intelligence_version
+
+    - name: Assert the authorized keys content of an account
+      vars:
+        dev_workstation_account:
+          authorized_keys: [ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyBodyOnly, ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyBodyTwo note]
+      ansible.builtin.assert:
+        that:
+          - dev_workstation__authorized_keys_content.splitlines() == dev_workstation_account.authorized_keys
+          - dev_workstation__authorized_keys_content is search('\n$')
+          - dev_workstation_account.authorized_keys | reject('match', dev_workstation__public_key_pattern) | list | length == 0
+          - "'-----BEGIN OPENSSH PRIVATE KEY-----' is not match(dev_workstation__public_key_pattern)"
+
+    - name: Check the rendered scripts
+      block:
+        - name: Create a scratch directory for rendered scripts
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: .render-probe
+          register: local_probes_render
+
+        - name: Render the gh wrapper and the toolchain environment
+          ansible.builtin.copy:
+            content: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../roles/dev_workstation/templates/' ~ item) }}"
+            dest: "{{ local_probes_render.path }}/{{ item }}"
+            mode: "0644"
+          loop: [gh-wrapper.sh.j2, toolchain.env.j2]
+
+        - name: Check the gh wrapper syntax
+          ansible.builtin.command:
+            argv: [sh, -n, "{{ local_probes_render.path }}/gh-wrapper.sh.j2"]
+          changed_when: false
+
+        - name: Read the toolchain environment as a login shell does
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv: [sh, -c, 'set -a; . "$1"; set +a; printf %s "$OFFICE_PATH"', sh, "{{ local_probes_render.path }}/toolchain.env.j2"]
+          register: local_probes_env
+          changed_when: false
+
+        - name: Assert the gh wrapper routes each account and the environment exports
+          vars:
+            local_probes_wrapper: "{{ lookup('ansible.builtin.file', local_probes_render.path ~ '/gh-wrapper.sh.j2') }}"
+          ansible.builtin.assert:
+            that:
+              - local_probes_wrapper is search('alpha\) scope=default; host=github.com ;;')
+              - local_probes_wrapper is search('gamma\) scope=enterprise; host=ghe.example.invalid ;;')
+              - local_probes_wrapper is not search('delta\)')
+              - local_probes_env.stdout == '/usr/bin/soffice'
+      always:
+        - name: Remove the rendered scripts
+          ansible.builtin.file:
+            path: "{{ local_probes_render.path }}"
+            state: absent
+          when: local_probes_render.path is defined
+
+- name: Exercise coding_agent_updates, container_engine and agent_workstation templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../roles/coding_agent_updates/defaults/main.yml
+    - ../roles/coding_agent_updates/vars/main.yml
+    - ../roles/agent_workstation/defaults/main.yml
+    - ../roles/agent_workstation/vars/main.yml
+  tasks:
+    - name: Set the account fixtures
+      ansible.builtin.set_fact:
+        container_engine_rootless_accounts: [alpha, beta]
+        agent_workstation_accounts:
+          - {name: alpha}
+          - {name: beta, workspace: /home/beta/own, service_tokens: [{name: tracker, env_name: TRACKER_TOKEN}]}
+        agent_workstation_service_tokens: [{name: notes, env_name: NOTES_TOKEN}]
+        dev_workstation_accounts:
+          - {name: alpha, workspace: /home/alpha/work}
+
+    - name: Assert the update schedule of the default interval
+      ansible.builtin.assert:
+        that:
+          - coding_agent_updates__on_calendar == '*-*-* 00,04,08,12,16,20:00:00'
+
+    - name: Assert a daily schedule
+      vars:
+        coding_agent_updates_interval_hours: 24
+      ansible.builtin.assert:
+        that:
+          - coding_agent_updates__on_calendar == '*-*-* 00:00:00'
+
+    - name: Assert the linked commands of the default CLIs
+      ansible.builtin.assert:
+        that:
+          - >-
+            coding_agent_updates__commands | map(attribute='command') | sort
+            == ['agent', 'claude', 'codex', 'cursor-agent', 'opencode']
+
+    - name: Assert the Herdr start directory and service tokens per account
+      ansible.builtin.assert:
+        that:
+          - >-
+            agent_workstation__workspace_of == {'alpha': '/home/alpha/work', 'beta': '/home/beta/own'}
+          - >-
+            agent_workstation__service_tokens_of.alpha == [{'name': 'notes', 'env_name': 'NOTES_TOKEN'}]
+          - agent_workstation__service_tokens_of.beta | map(attribute='name') | list == ['notes', 'tracker']
+        fail_msg: "got {{ agent_workstation__workspace_of }} / {{ agent_workstation__service_tokens_of }}"
+
+    - name: Assert the Herdr start directory falls back to the default
+      vars:
+        agent_workstation__account: {name: gamma}
+      ansible.builtin.assert:
+        that:
+          - agent_workstation__herdr_workdir == '%h'
+
+    - name: Resolve a command the way the external coding-CLI check does
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv: [env, -i, "PATH=/usr/bin:/bin", sh, -c, 'command -v "$1"', sh, sh]
+      register: local_probes_resolved
+      changed_when: false
+
+    - name: Assert the resolution prints an absolute path
+      ansible.builtin.assert:
+        that:
+          - local_probes_resolved.stdout is match('^/')
+
+    - name: Check the rendered scripts
+      block:
+        - name: Create a scratch directory for rendered scripts
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: .render-probe
+          register: local_probes_render
+
+        - name: Render the scripts
+          ansible.builtin.copy:
+            content: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../roles/' ~ item.src, template_vars=item.vars | default({})) }}"
+            dest: "{{ local_probes_render.path }}/{{ item.name }}"
+            mode: "0644"
+          loop:
+            - {name: updater.sh, src: coding_agent_updates/templates/updater.sh.j2}
+            - {name: wrapper.sh, src: coding_agent_updates/templates/wrapper.sh.j2, vars: {item: {command: claude, tool: claude_code}}}
+            - {name: rootless-login.sh, src: container_engine/templates/rootless-login.sh.j2}
+            - {name: agent-auth.py, src: agent_workstation/templates/agent-auth.py.j2}
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: Check the shell script syntax
+          ansible.builtin.command:
+            argv: ["{{ item.shell }}", -n, "{{ local_probes_render.path }}/{{ item.name }}"]
+          loop:
+            - {name: updater.sh, shell: bash}
+            - {name: wrapper.sh, shell: sh}
+            - {name: rootless-login.sh, shell: sh}
+          loop_control:
+            label: "{{ item.name }}"
+          changed_when: false
+
+        - name: Load the updater functions without running an update
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv: [bash, -c, '. "$1" && declare -F github_tool installer_tool apt_tool publish unpack', bash, "{{ local_probes_render.path }}/updater.sh"]
+          changed_when: false
+
+        - name: Check the agent-auth syntax
+          ansible.builtin.command:
+            argv: [python3, -c, "import ast, sys; ast.parse(open(sys.argv[1]).read())", "{{ local_probes_render.path }}/agent-auth.py"]
+          changed_when: false
+
+        - name: Read the rootless environment of a listed account
+          ansible.builtin.command:
+            expand_argument_vars: false
+            argv:
+              - sh
+              - -c
+              - >-
+                id() { case "$1" in -un) echo alpha ;; -u) echo 4242 ;; esac; };
+                . "$1"; printf "%s %s" "$DOCKER_HOST" "$XDG_RUNTIME_DIR"
+              - sh
+              - "{{ local_probes_render.path }}/rootless-login.sh"
+          environment:
+            XDG_RUNTIME_DIR: ""
+          register: local_probes_login
+          changed_when: false
+
+        - name: Assert the rootless environment names the account's own socket
+          ansible.builtin.assert:
+            that:
+              - local_probes_login.stdout == 'unix:///run/user/4242/docker.sock /run/user/4242'
+            fail_msg: "got {{ local_probes_login.stdout }}"
+      always:
+        - name: Remove the rendered scripts
+          ansible.builtin.file:
+            path: "{{ local_probes_render.path }}"
+            state: absent
+          when: local_probes_render.path is defined

@@ -1,6 +1,7 @@
 ---
-# Read-only check: definitions, volumes, stored registrations and containers match the declared instances.
-# Forge-side state (online, labels, job acceptance) is not visible from the host; check it at the forge.
+# Read-only check: definitions, volumes, stored registrations and containers match the declared instances,
+# on the rootful daemon or on the runner account's rootless daemon. Forge-side state (online, labels, job
+# acceptance) is not visible from the host; check it at the forge.
 
 - name: Validate the host and inputs
   ansible.builtin.include_tasks: validate.yml
@@ -16,12 +17,56 @@
       - >-
         not github_actions_runner__base_dir_stat.stat.exists
         or (github_actions_runner__base_dir_stat.stat.isdir and github_actions_runner__base_dir_stat.stat.uid == 0
-            and github_actions_runner__base_dir_stat.stat.mode == '0700')
+            and github_actions_runner__base_dir_stat.stat.gid == github_actions_runner__def_gid | int
+            and github_actions_runner__base_dir_stat.stat.mode == github_actions_runner__dir_mode)
       - >-
         github_actions_runner__base_dir_stat.stat.exists
         or github_actions_runner__active | length == 0
-    fail_msg: "{{ github_actions_runner_base_dir }} must exist as a root-owned 0700 directory."
+    fail_msg: >-
+      {{ github_actions_runner_base_dir }} must exist as a root-owned {{ github_actions_runner__dir_mode }} directory
+      of group {{ github_actions_runner__def_gid }}.
     quiet: true
+
+- name: Check bridge netfilter for the rootless runners
+  when:
+    - github_actions_runner__rootless
+    - github_actions_runner_bridge_netfilter | bool
+  block:
+    - name: Read the bridge netfilter module and its sysctl
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: false
+      loop:
+        - /sys/module/br_netfilter
+        - /proc/sys/net/bridge/bridge-nf-call-iptables
+      register: github_actions_runner__netfilter
+
+    - name: Read the bridge netfilter boot file
+      ansible.builtin.stat:
+        path: "{{ github_actions_runner__modules_load_file }}"
+        get_checksum: false
+      register: github_actions_runner__netfilter_file
+
+    - name: Read the bridge netfilter boot configuration
+      ansible.builtin.command:
+        argv: [cat, --, "{{ github_actions_runner__modules_load_file }}"]
+      register: github_actions_runner__netfilter_boot
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert bridge netfilter is loaded and persisted
+      ansible.builtin.assert:
+        that:
+          - github_actions_runner__netfilter.results | rejectattr('stat.exists') | list | length == 0
+          - github_actions_runner__netfilter_file.stat.isreg | default(false)
+          - github_actions_runner__netfilter_file.stat.uid == 0
+          - github_actions_runner__netfilter_file.stat.mode == '0644'
+          - github_actions_runner__netfilter_boot.stdout | trim == 'br_netfilter'
+        fail_msg: >-
+          br_netfilter is not loaded, its bridge sysctls are missing, or {{ github_actions_runner__modules_load_file }}
+          (root 0644, the single line br_netfilter) does not load it at boot. Apply the role.
+        quiet: true
 
 - name: Check runner instances
   ansible.builtin.include_tasks: check_instance.yml

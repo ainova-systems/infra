@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: coding_agent_updates
+  namespace: ainova
+  author: Ainova Systems
+  description: Coding-agent CLIs on a vendor release channel, updated on a timer for listed accounts without restarting running sessions
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - resolute
+        - noble
+  galaxy_tags: [workstation, development, agents, updates]
+# The accounts come from dev_workstation; apply it first. agent_workstation, applied after this role, takes
+# the CLIs as external (agent_workstation_coding_cli_mode: external).
+dependencies: []

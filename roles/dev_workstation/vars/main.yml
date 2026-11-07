@@ -4,6 +4,118 @@
 # Credential scope keys an entry may carry; anything else is rejected.
 dev_workstation__scope_keys: [name, url, kind, username, validate_url]
 
+# Account entry keys; anything else is rejected.
+dev_workstation__account_keys:
+  - name
+  - git_name
+  - git_email
+  - credential_scopes
+  - home_mode
+  - workspace
+  - workspace_mode
+  - authorized_keys
+  - dotnet_tools
+  - gh_scope
+dev_workstation__private_modes: ["0700", "0750"]
+
+# Input shapes.
+dev_workstation__public_key_pattern: >-
+  ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)
+  [A-Za-z0-9+/]+={0,3}( \S+)?$
+dev_workstation__workspace_pattern: '^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$'
+dev_workstation__package_pattern: '^[a-z0-9][a-z0-9+.-]+$'
+dev_workstation__npm_name_pattern: '^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$'
+dev_workstation__exact_version_pattern: '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+dev_workstation__env_name_pattern: '^[A-Z][A-Z0-9_]*$'
+dev_workstation__env_value_pattern: '^[A-Za-z0-9 _./:,@%+=-]*$'
+dev_workstation__secret_name_pattern: '(?i)(token|secret|passw|key|credential|auth)'
+dev_workstation__reserved_env:
+  - PATH
+  - HOME
+  - USER
+  - LOGNAME
+  - SHELL
+  - ENV
+  - BASH_ENV
+  - IFS
+  - DOTNET_ROOT
+  - DOTNET_CLI_TELEMETRY_OPTOUT
+  - DOTNET_NOLOGO
+  - COREPACK_ENABLE_DOWNLOAD_PROMPT
+  - COREPACK_DEFAULT_TO_LATEST
+  - DOCKER_HOST
+  - XDG_RUNTIME_DIR
+  - GH_HOST
+
+# Probes as data, so tests/local-probes.yml runs the exact argv the check runs. dpkg-query prints
+# "<name> <want> <ok> <status>" per known name; npm lists the global packages as JSON.
+dev_workstation__dpkg_status_argv: [dpkg-query, --show, '--showformat=${Package} ${Status}\n']
+dev_workstation__npm_global_argv: [/usr/bin/npm, ls, --global, --depth=0, --json]
+
+# Signed apt sources of this role, for the conflict probe below.
+dev_workstation__apt_sources_dir: /etc/apt/sources.list.d
+dev_workstation__apt_repos:
+  - {list: nodesource.list, url: "{{ dev_workstation_node_repo_url }}", key_file: /etc/apt/keyrings/nodesource.asc}
+  - {list: github-cli.list, url: "{{ dev_workstation_gh_repo_url }}", key_file: /etc/apt/keyrings/githubcli-archive-keyring.gpg}
+# Prints "<file><TAB><signed-by keyrings>" for every active source file in the directory (and the main
+# sources.list beside it) that names the repository URL. apt refuses two entries for one repository with
+# different Signed-By values, so another file naming the URL with another keyring stops the role.
+dev_workstation__apt_sources_probe: |
+  dir=$1 url=$2
+  for f in "$dir"/*.list "$dir"/*.sources "$dir"/../sources.list; do
+    [ -f "$f" ] || continue
+    grep -v '^[[:space:]]*#' "$f" | grep -qF -- "$url" || continue
+    keys=$(grep -v '^[[:space:]]*#' "$f" \
+      | sed -nE 's/.*[Ss][Ii][Gg][Nn][Ee][Dd]-[Bb][Yy][[:space:]]*[=:][[:space:]]*([^] ,[:space:]]+).*/\1/p' \
+      | sort -u | tr '\n' ' ')
+    printf '%s\t%s\n' "$f" "$keys"
+  done
+# Files other than the role's own that name a repository with any keyring but the role's (results of the
+# probe, looped over dev_workstation__apt_repos).
+dev_workstation__apt_conflicts: >-
+  {%- set out = [] -%}
+  {%- for r in dev_workstation_apt_sources.results | default([]) -%}
+  {%-   for line in r.stdout_lines | default([]) if line.split('\t') | length == 2 -%}
+  {%-     set file = line.split('\t')[0] -%}
+  {%-     if (file | basename) != r.item.list and line.split('\t')[1].split() != [r.item.key_file] -%}
+  {%-       set _ = out.append(file ~ ' (' ~ r.item.url ~ ')') -%}
+  {%-     endif -%}
+  {%-   endfor -%}
+  {%- endfor -%}
+  {{ out }}
+
+# .NET tools per account name: dev_workstation_dotnet_tools with the account's own entries replacing the
+# global entry of the same name (case-insensitive, as NuGet package IDs are) and the others added.
+dev_workstation__dotnet_tools_of: >-
+  {%- set out = {} -%}
+  {%- for account in dev_workstation_accounts if account is mapping -%}
+  {%-   set own = account.dotnet_tools | default([]) -%}
+  {%-   set own_names = own | select('mapping') | map(attribute='name', default='') | map('lower') | list -%}
+  {%-   set merged = [] -%}
+  {%-   for tool in dev_workstation_dotnet_tools if (tool.name | default('') | lower) not in own_names -%}
+  {%-     set _ = merged.append(tool) -%}
+  {%-   endfor -%}
+  {%-   set _ = out.update({account.name | default(''): merged + own}) -%}
+  {%- endfor -%}
+  {{ out }}
+
+# Global npm packages by name and version, from dev_workstation__npm_global_argv output.
+dev_workstation__npm_installed: >-
+  {%- set out = {} -%}
+  {%- set deps = (dev_workstation_npm_global.stdout | default('{}', true) | from_json).dependencies | default({}) -%}
+  {%- for name, dep in deps.items() -%}{%- set _ = out.update({name: dep.version | default('')}) -%}{%- endfor -%}
+  {{ out }}
+
+# Intelligence CLI update unit values per mode.
+dev_workstation__intelligence_unit_version: >-
+  {{ dev_workstation_intelligence_update_channel if dev_workstation_intelligence_update_mode == 'channel'
+     else dev_workstation_intelligence_update_version }}
+dev_workstation__intelligence_hours: >-
+  {% for hour in range(0, 24, dev_workstation_intelligence_update_interval_hours | int) %}{{ '%02d' % hour }}{{ ',' if not loop.last else '' }}{% endfor %}
+dev_workstation__intelligence_on_calendar: >-
+  {{ ('*-*-* ' ~ dev_workstation__intelligence_hours ~ ':00:00') if dev_workstation_intelligence_update_mode == 'channel'
+     else dev_workstation_intelligence_update_on_calendar }}
+
 # Credential scopes per account name, with kind and username resolved: kind defaults to github for a
 # github.com URL and to generic otherwise; a github scope defaults its username to x-access-token, a
 # generic scope has no default (empty, which the assert refuses).
@@ -23,6 +135,30 @@ dev_workstation__scopes: >-
   {%-   set _ = out.update({account.name | default(''): entries}) -%}
   {%- endfor -%}
   {{ out }}
+
+# The scope whose token the gh wrapper hands to gh, per account name: the account's gh_scope, or else the
+# github scope on github.com with the shortest URL; accounts without one are absent (gh runs as installed).
+dev_workstation__gh_scope_of: >-
+  {%- set out = {} -%}
+  {%- for account in dev_workstation_accounts if account is mapping -%}
+  {%-   set github = dev_workstation__scopes[account.name | default('')] | default([]) | selectattr('kind', 'equalto', 'github') | list -%}
+  {%-   if account.gh_scope is defined -%}
+  {%-     set chosen = github | selectattr('name', 'equalto', account.gh_scope) | list -%}
+  {%-   else -%}
+  {%-     set chosen = github | selectattr('url', 'match', '^https://github\\.com(/|$)') | sort(attribute='url') | list -%}
+  {%-   endif -%}
+  {%-   if chosen | length > 0 -%}
+  {%-     set _ = out.update({account.name: {'name': chosen[0].name,
+            'host': chosen[0].url | regex_replace('^https://([^/]*).*$', '\\1') | lower}}) -%}
+  {%-   endif -%}
+  {%- endfor -%}
+  {{ out }}
+
+# The authorized_keys file of the current account (loop_var dev_workstation_account), exactly the declared keys,
+# one per line. The newline is built in a statement: escapes in a bare expression stay literal.
+dev_workstation__authorized_keys_content: >-
+  {%- set newline = '\n' -%}
+  {%- for key in dev_workstation_account.authorized_keys | default([]) -%}{{ key }}{{ newline }}{%- endfor -%}
 
 # Names of the current account's generic scopes: their token files must use TOKEN=, never the legacy GH_TOKEN=.
 dev_workstation__generic_scopes: >-

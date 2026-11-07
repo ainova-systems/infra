@@ -4,13 +4,39 @@
 - name: Validate the host and inputs
   ansible.builtin.include_tasks: validate.yml
 
+- name: Prepare the rootless daemon of the runner account
+  when: github_actions_runner__rootless
+  block:
+    # acl lets Ansible hand its temporary files to the runner account for the Compose tasks run as it.
+    - name: Install acl for tasks run as the runner account
+      ansible.builtin.apt:
+        name: acl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Load bridge netfilter for nested Docker networking
+      community.general.modprobe:
+        name: br_netfilter
+        state: present
+      when: github_actions_runner_bridge_netfilter | bool
+
+    - name: Load bridge netfilter at boot
+      ansible.builtin.copy:
+        dest: "{{ github_actions_runner__modules_load_file }}"
+        content: "br_netfilter\n"
+        owner: root
+        group: root
+        mode: "0644"
+      when: github_actions_runner_bridge_netfilter | bool
+
 - name: Create the definition directory
   ansible.builtin.file:
     path: "{{ github_actions_runner_base_dir }}"
     state: directory
     owner: root
-    group: root
-    mode: "0700"
+    group: "{{ github_actions_runner__def_gid }}"
+    mode: "{{ github_actions_runner__dir_mode }}"
 
 - name: Converge runner instances
   ansible.builtin.include_tasks: instance.yml

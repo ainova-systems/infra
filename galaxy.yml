@@ -1,13 +1,14 @@
 ---
 namespace: ainova
 name: infra
-version: 0.3.1
+version: 0.4.0
 readme: README.md
 authors:
   - Ainova Systems
 description: >-
   Provider-neutral roles for host baseline, container engine, self-hosted CI runners,
-  Compose and Swarm hosts, developer and agent workstations, and read-only host health.
+  Compose and Swarm hosts, developer and agent workstations, channel-updated coding-agent CLIs,
+  and read-only host health.
 license:
   - MIT
 tags:

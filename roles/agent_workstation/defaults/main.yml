@@ -3,18 +3,37 @@
 # agent-auth hidden-input credential helper for unprivileged coding accounts.
 # Every version is a pin. Moving a pin means changing version and sha256 together.
 
-# Coding accounts served by this role. The accounts must already exist (dev_workstation).
-# credential_scopes must list the same entries as the dev_workstation entry for the account; omit
-# it to use agent_workstation_default_credential_scopes. Scope: {name, url, kind?, username?,
-# validate_url?}, no other keys (contract in the dev_workstation defaults). kind github (default for
-# a github.com URL) validates against the GitHub API; kind generic stores without an API call unless
-# validate_url is set, and needs a username.
+# Coding accounts served by this role. The accounts must already exist (dev_workstation). Entry keys:
+# {name, credential_scopes?, workspace?, service_tokens?}; no other keys are accepted.
+#   credential_scopes  the same entries as the dev_workstation entry for the account; omit it to use
+#                      agent_workstation_default_credential_scopes. Scope: {name, url, kind?, username?,
+#                      validate_url?} (contract in the dev_workstation defaults). kind github (default for a
+#                      github.com URL) validates against the GitHub API; kind generic stores without an API
+#                      call unless validate_url is set, and needs a username.
+#   workspace          directory Herdr starts in; default the account's dev_workstation workspace, else
+#                      agent_workstation_herdr_working_directory
+#   service_tokens     [{name, env_name}] for this account, added to agent_workstation_service_tokens
 #   - name: coder
 #     credential_scopes:
 #       - {name: default, url: "https://github.com"}
 #       - {name: shared, url: "https://github.com/example-org"}
 #       - {name: bitbucket, url: "https://bitbucket.org/example-org", username: x-token-auth}
+#     service_tokens:
+#       - {name: tracker, env_name: TRACKER_TOKEN}
 agent_workstation_accounts: []
+
+# Tokens for services that are not Git forges (a work tracker, for example), for every account.
+# `agent-auth service <name>` reads one at a hidden prompt and stores it as <env_name>=<token> in
+# ~/.config/service-tokens/<name>.env (0600, directory 0700): an environment file a tool or a user unit
+# (EnvironmentFile=) loads. Never an argument, never echoed, never logged, never validated by the role.
+#   - {name: tracker, env_name: TRACKER_TOKEN}
+agent_workstation_service_tokens: []
+
+# Who owns the coding-agent CLIs (claude_code, codex, cursor_agent, opencode):
+#   pinned    this role installs the ones in agent_workstation_enabled_tools at their pins (default)
+#   external  another role (coding_agent_updates) owns them; this role installs none of them, and the Herdr
+#             integrations resolve each CLI on the account's PATH (agent_workstation_herdr_path)
+agent_workstation_coding_cli_mode: pinned
 
 # Scopes used when an account declares none. Same contract as dev_workstation.
 agent_workstation_default_credential_scopes:
@@ -153,6 +172,7 @@ agent_workstation_private_dirs:
   - .config/fresh
   - .config/opencode
   - .config/git-credentials
+  - .config/service-tokens
   - .codex
   - .claude
   - .cursor
@@ -162,11 +182,13 @@ agent_workstation_private_dirs:
 # Herdr persistent console as a per-account systemd user service. Applying never restarts a
 # running console; a changed unit takes effect on the account's next restart of the service.
 agent_workstation_herdr_service: true
+# Start directory for accounts without a workspace.
 agent_workstation_herdr_working_directory: "%h"
 agent_workstation_herdr_path: "%h/.local/bin:%h/.dotnet/tools:/usr/local/bin:/usr/bin:/bin"
 # Export DOCKER_HOST for a rootless engine socket under the account runtime directory.
 agent_workstation_herdr_rootless_docker: true
-# Runtimes whose Herdr integration is installed; each needs its CLI enabled above.
+# Runtimes whose Herdr integration is installed. pinned mode: each needs its CLI enabled above; external mode:
+# each needs its CLI on the account's PATH.
 agent_workstation_herdr_integrations: [claude, codex, cursor, opencode]
 # Written only when ~/.config/herdr/config.toml is absent; existing settings are preserved.
 agent_workstation_herdr_config: |

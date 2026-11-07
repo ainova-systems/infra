@@ -2,9 +2,21 @@
 # dev_workstation: coding accounts, Git identity, pinned toolchain and per-organization Git credentials.
 # Provisioning never clones a repository, never syncs project Intelligence and never stores a token.
 
-# Coding accounts. Every entry: {name, git_name, git_email, credential_scopes}; no other keys are accepted,
-# so a credential cannot ride in on host variables. credential_scopes is optional and defaults to
-# dev_workstation_default_credential_scopes.
+# Coding accounts. Every entry: {name, git_name, git_email} plus the optional keys below; no other keys are
+# accepted, so a credential cannot ride in on host variables.
+#   credential_scopes  default dev_workstation_default_credential_scopes (scope keys below)
+#   home_mode          0700 | 0750; default dev_workstation_home_mode
+#   workspace          absolute directory inside the account's home, created and owned by the account; the
+#                      role never assumes a repository in it and never clones one
+#   workspace_mode     0700 | 0750; default 0750
+#   authorized_keys    public keys (<type> <body> [comment]) allowed to log in as the account; when set, the
+#                      role owns ~/.ssh/authorized_keys exactly (0600, ~/.ssh 0700; [] empties it); when the
+#                      key is absent the file is never touched. SSH login also needs the account in
+#                      host_base_ssh_extra_users.
+#   dotnet_tools       [{name, version}] for this account only, merged by name over dev_workstation_dotnet_tools:
+#                      an entry replaces the global entry of the same name for this account, the others are added
+#   gh_scope           github scope whose token the gh wrapper hands to gh; default the account's github.com
+#                      scope whose URL sorts first (the plain https://github.com scope when declared)
 # Scope: {name, url, kind?, username?, validate_url?}; no other keys are accepted.
 #   url       https prefix with no user info, query or trailing slash
 #   kind      github | generic; default github for a github.com URL, generic otherwise
@@ -19,13 +31,19 @@
 #       - {name: default, url: https://github.com}
 #       - {name: shared, url: https://github.com/example-org}
 #       - {name: bitbucket, url: https://bitbucket.org/example-org, username: x-token-auth}
+#     home_mode: "0700"
+#     workspace: /home/coder/work
+#     authorized_keys: [ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyBodyOnly]
+#     dotnet_tools:
+#       - {name: dotnet-ef, version: 10.0.0}
 dev_workstation_accounts: []
 
 dev_workstation_default_credential_scopes:
   - name: default
     url: https://github.com
 
-# Login shell for accounts the role creates; home mode is enforced on every coding account's home.
+# Login shell for accounts the role creates; home mode (0700 or 0750) is enforced on every coding account's
+# home unless the account sets its own home_mode.
 dev_workstation_account_shell: /bin/bash
 dev_workstation_home_mode: "0750"
 
@@ -40,6 +58,16 @@ dev_workstation_packages:
   - make
   - zlib1g
 
+# Further distribution packages (search and archive tools, document converters), by name, for example
+# [ripgrep, unzip]. The version is the one the signed distribution archive serves; never `latest`, never a
+# version pin here.
+dev_workstation_extra_packages: []
+
+# Non-secret environment for every login shell and for services that read the toolchain environment file,
+# for example {OFFICE_PATH: /usr/bin/soffice}. Names that look like secrets (token, secret, password, key,
+# credential, auth), the role's own names and loader or shell variables are refused; values are plain text.
+dev_workstation_environment: {}
+
 # .NET SDKs, side by side, in ascending version order (the newest extracted last owns the dotnet host).
 # Exact versions and SHA-512 from the official release metadata (releases.json per channel).
 dev_workstation_dotnet_root: /usr/share/dotnet
@@ -51,6 +79,7 @@ dev_workstation_dotnet_sdks:
 dev_workstation_dotnet_download_url: "https://builds.dotnet.microsoft.com/dotnet/Sdk/{version}/dotnet-sdk-{version}-linux-x64.tar.gz"
 
 # .NET global tools installed into every coding account's own ~/.dotnet/tools. List of {name, version}.
+# An account's own dotnet_tools entry of the same name replaces the entry here for that account.
 #   - {name: dotnet-ef, version: 8.0.11}
 dev_workstation_dotnet_tools: []
 
@@ -68,8 +97,14 @@ dev_workstation_node_key_fingerprints:
 dev_workstation_corepack_version: 0.36.0
 dev_workstation_pnpm_fallback_version: 9.15.9
 
-# GitHub CLI from its signed repository, exact version, held. No login, no token, no wrapper.
+# GitHub CLI from its signed repository, exact version, held. The role never logs it in.
 dev_workstation_gh_version: 2.102.0
+# Root-owned wrapper at dev_workstation_gh_wrapper_path (ahead of /usr/bin/gh on PATH): it hands gh the token
+# the account stored for its gh scope (agent-auth <scope>), in gh's own environment only; no global token
+# variable and no gh login file (the preflight still refuses ~/.config/gh/hosts.yml). false: plain gh, and a
+# wrapper this role wrote is removed.
+dev_workstation_gh_wrapper: true
+dev_workstation_gh_wrapper_path: /usr/local/bin/gh
 dev_workstation_gh_repo_url: https://cli.github.com/packages
 dev_workstation_gh_key_url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
 dev_workstation_gh_key_fingerprints:
@@ -81,12 +116,23 @@ dev_workstation_gh_key_fingerprints:
 dev_workstation_intelligence_package: "@ainova-systems/intelligence"
 dev_workstation_intelligence_version: 0.24.0
 
+# npm command-line tools for every account (an API test runner, for example): installed system-wide into the
+# global prefix of the pinned Node.js, root-owned, at exact versions, with lifecycle scripts disabled
+# (--ignore-scripts). A different installed version is moved to the pin. List of {name, version}.
+#   - {name: "@example-scope/example-cli", version: 1.2.3}
+dev_workstation_npm_tools: []
+
 # Update timer. It updates the CLI only; it never runs sync, init or update in a checkout.
-# update_version is the npm version or dist-tag the timer installs. The default repairs drift to the pin;
-# a project that wants hosts to track new releases sets a dist-tag here and records that decision itself.
+#   mode pinned   the timer installs update_version (default: the pin, which repairs drift) on on_calendar
+#   mode channel  a deliberate update channel: the timer installs the npm dist-tag update_channel every
+#                 update_interval_hours (a divisor of 24) and the host follows its releases. The apply still
+#                 installs dev_workstation_intelligence_version as the minimum and never downgrades.
 dev_workstation_intelligence_update_enabled: true
+dev_workstation_intelligence_update_mode: pinned
 dev_workstation_intelligence_update_version: "{{ dev_workstation_intelligence_version }}"
 dev_workstation_intelligence_update_on_calendar: weekly
+dev_workstation_intelligence_update_channel: latest
+dev_workstation_intelligence_update_interval_hours: 4
 dev_workstation_intelligence_update_randomized_delay: 1h
 
 # Paths owned by this role.

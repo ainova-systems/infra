@@ -1,7 +1,8 @@
 # dev_workstation
 
-Per coding account: the account itself, Git identity, a pinned development toolchain, GitHub CLI,
-Intelligence CLI with its update timer, and per-scope Git credentials for any HTTPS forge.
+Per coding account: the account itself, its workspace and SSH login keys, Git identity, a pinned development
+toolchain, GitHub CLI with a scope-token wrapper, Intelligence CLI with its update timer, and per-scope Git
+credentials for any HTTPS forge.
 
 Boundary: provisioning installs ready-to-use non-secret configuration only. It never clones a
 repository, never runs `intelligence sync` or any project command, and never stores a token. Storing
@@ -33,18 +34,36 @@ No collection beyond `ansible.builtin`.
 
 | Area | Result | Pin |
 |---|---|---|
-| Accounts | One account per `dev_workstation_accounts` entry, home mode `dev_workstation_home_mode` | - |
+| Accounts | One account per `dev_workstation_accounts` entry, home mode `home_mode` or `dev_workstation_home_mode` (0700 or 0750) | - |
+| Workspace | Optional `workspace` inside the home, created by the account, mode `workspace_mode` (0750 default, or 0700); no repository is assumed or cloned | per account |
+| SSH login keys | Optional `authorized_keys`: `~/.ssh/authorized_keys` holds exactly them (0600, `~/.ssh` 0700); without the key the file is never touched. Login also needs `host_base_ssh_extra_users` | per account |
 | Git identity | `user.name`, `user.email` in the account's global Git config | per account |
 | .NET | SDKs side by side under `dev_workstation_dotnet_root`, SHA-512 verified; `/usr/local/bin/dotnet` | `dev_workstation_dotnet_sdks` |
-| .NET tools | Installed into each account's own `~/.dotnet/tools` | `dev_workstation_dotnet_tools` |
+| .NET tools | Installed into each account's own `~/.dotnet/tools`; an account's `dotnet_tools` entry replaces the global entry of the same name for it and adds the others | `dev_workstation_dotnet_tools`, per-account `dotnet_tools` |
+| Extra packages | Distribution packages by name (for example `ripgrep`, `unzip`, document converters); the version is the signed archive's | `dev_workstation_extra_packages` |
+| npm tools | System-wide in the pinned Node.js prefix, root-owned, lifecycle scripts disabled; moved to the pin when another version is installed | `dev_workstation_npm_tools` |
 | Node.js | NodeSource signed repository, key fingerprint verified, exact package, apt hold | `dev_workstation_node_package_version` |
 | Corepack | Own versioned prefix under `dev_workstation_tools_dir`; `corepack`, `pnpm`, `pnpx` links in `/usr/local/bin` | `dev_workstation_corepack_version` |
 | pnpm | Shim runs the repository's `packageManager`; fallback pre-fetched per account | `dev_workstation_pnpm_fallback_version` |
 | GitHub CLI | Signed repository, key fingerprints verified, exact package, apt hold; no login | `dev_workstation_gh_version` |
+| gh wrapper | `/usr/local/bin/gh` (root, 0755) hands gh the token of the account's gh scope ([GitHub CLI](#github-cli)) | `dev_workstation_gh_wrapper` |
 | Intelligence CLI | System-wide npm package; never downgraded by apply | `dev_workstation_intelligence_version` |
-| Update timer | `intelligence-cli-update.timer`; updates the CLI only, never touches a checkout | `dev_workstation_intelligence_update_version` |
-| Shared environment | `/etc/dev-workstation/toolchain.env` (systemd `EnvironmentFile` syntax) and `/etc/profile.d/dev-workstation-toolchain.sh` | - |
+| Update timer | `intelligence-cli-update.timer`; updates the CLI only, never touches a checkout; `pinned` or `channel` mode | `dev_workstation_intelligence_update_*` |
+| Shared environment | `/etc/dev-workstation/toolchain.env` (systemd `EnvironmentFile` syntax) and `/etc/profile.d/dev-workstation-toolchain.sh`, plus the non-secret `dev_workstation_environment` | - |
 | Credential scopes | Helper, preflight and per-account scope file (below) | - |
+
+## GitHub CLI
+
+With `dev_workstation_gh_wrapper` (default `true`) a root-owned wrapper ahead of `/usr/bin/gh` reads the token
+the account stored for its gh scope (`agent-auth <scope>`) from the same `~/.config/git-credentials/<scope>.env`
+the Git helper reads, under the same rules (regular, owner-only 0600, one `TOKEN` line or one legacy `GH_TOKEN`
+line), and passes it to gh as `GH_TOKEN` (`GH_ENTERPRISE_TOKEN` and `GH_HOST` for another host) in gh's own
+environment only. Nothing is exported to the shell or written; `~/.config/gh/hosts.yml` stays refused by the
+preflight. A token already in the environment wins; without a usable file gh runs unauthenticated.
+
+The gh scope is the account's `gh_scope`, or else its `github` scope on `github.com` whose URL sorts first (the
+plain `https://github.com` scope when declared). An existing `/usr/local/bin/gh` this role did not write stops
+the run: another tool's wrapper is retired deliberately. `false` removes the role's wrapper.
 
 ## Credential scopes
 
@@ -122,15 +141,18 @@ account, then re-apply. The role never deletes account files.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `dev_workstation_accounts` | `[]` (required) | List of `{name, git_name, git_email, credential_scopes}`; any other key is rejected; scopes as in [Credential scopes](#credential-scopes) |
+| `dev_workstation_accounts` | `[]` (required) | List of `{name, git_name, git_email}` plus optional `credential_scopes` ([Credential scopes](#credential-scopes)), `home_mode`, `workspace`, `workspace_mode`, `authorized_keys`, `dotnet_tools`, `gh_scope`; any other key is rejected |
 | `dev_workstation_default_credential_scopes` | `[{name: default, url: https://github.com}]` | Scopes for accounts that declare none |
 | `dev_workstation_account_shell` | `/bin/bash` | Shell for created accounts |
-| `dev_workstation_home_mode` | `0750` | Enforced home mode |
+| `dev_workstation_home_mode` | `0750` | Enforced home mode, `0700` or `0750`; an account's `home_mode` wins |
 | `dev_workstation_packages` | build prerequisites | Distribution packages |
+| `dev_workstation_extra_packages` | `[]` | Further distribution packages, by name |
+| `dev_workstation_environment` | `{}` | Non-secret `NAME: value` pairs for login shells and services reading the toolchain file; secret-looking, role-owned, loader and shell names are refused, values are plain text |
+| `dev_workstation_npm_tools` | `[]` | `{name, version}` system-wide npm tools at exact versions, `--ignore-scripts` |
 | `dev_workstation_dotnet_root` | `/usr/share/dotnet` | .NET root |
 | `dev_workstation_dotnet_sdks` | 8.0.427, 10.0.403 | `{version, sha512}` list, ascending |
 | `dev_workstation_dotnet_download_url` | official build URL | `{version}` is substituted |
-| `dev_workstation_dotnet_tools` | `[]` | `{name, version}` per-account global tools |
+| `dev_workstation_dotnet_tools` | `[]` | `{name, version}` per-account global tools; merged by name with an account's `dotnet_tools` |
 | `dev_workstation_node_major` | `26` | NodeSource channel |
 | `dev_workstation_node_package_version` | `26.13.0-1nodesource1` | Exact package |
 | `dev_workstation_node_key_url`, `_key_fingerprints` | NodeSource key | Accepted primary-key fingerprints |
@@ -138,31 +160,43 @@ account, then re-apply. The role never deletes account files.
 | `dev_workstation_pnpm_fallback_version` | `9.15.9` | pnpm for repositories without `packageManager` |
 | `dev_workstation_gh_version` | `2.102.0` | Exact GitHub CLI |
 | `dev_workstation_gh_key_url`, `_key_fingerprints` | GitHub CLI key | Accepted primary-key fingerprints |
+| `dev_workstation_gh_wrapper`, `_gh_wrapper_path` | `true`, `/usr/local/bin/gh` | [GitHub CLI](#github-cli) wrapper |
 | `dev_workstation_intelligence_package` | `@ainova-systems/intelligence` | npm package |
 | `dev_workstation_intelligence_version` | `0.24.0` | Minimum installed version |
 | `dev_workstation_intelligence_update_enabled` | `true` | Timer on or off |
-| `dev_workstation_intelligence_update_version` | the pin | Version or dist-tag the timer installs |
-| `dev_workstation_intelligence_update_on_calendar` | `weekly` | systemd `OnCalendar` |
+| `dev_workstation_intelligence_update_mode` | `pinned` | `pinned`: the timer installs `_update_version` on `_update_on_calendar`. `channel`: it installs the dist-tag `_update_channel` every `_update_interval_hours` |
+| `dev_workstation_intelligence_update_version` | the pin | `pinned` mode: version or dist-tag the timer installs |
+| `dev_workstation_intelligence_update_on_calendar` | `weekly` | `pinned` mode: systemd `OnCalendar` |
+| `dev_workstation_intelligence_update_channel` | `latest` | `channel` mode: npm dist-tag followed |
+| `dev_workstation_intelligence_update_interval_hours` | `4` | `channel` mode: hours between runs, a divisor of 24 |
 | `dev_workstation_intelligence_update_randomized_delay` | `1h` | systemd `RandomizedDelaySec` |
 | `dev_workstation_state_dir`, `_tools_dir`, `_config_dir`, `_libexec_dir`, `_credential_helper` | under `/var/lib`, `/opt`, `/etc`, `/usr/local` | Role-owned paths |
 
-The update timer installs `dev_workstation_intelligence_update_version`. Left at the pin it repairs
-drift; a project that wants hosts to follow new releases sets a dist-tag there and records that choice
-in its own decisions.
+In `pinned` mode the update timer installs `dev_workstation_intelligence_update_version`; left at the pin it
+repairs drift. `channel` mode is a deliberate update channel for agent tooling: the host follows every release
+of the dist-tag on a fixed schedule, while the apply still installs `dev_workstation_intelligence_version` as
+the minimum and never downgrades. A project choosing it records that decision in its own decisions.
 
 ## Check
 
-`tasks/check.yml` is read-only and fails on the first failed control: managed files match the role and
-are root-owned; signing keys match the pinned fingerprints; Node.js and GitHub CLI are the pinned held
-packages; Corepack, the SDK set and the Intelligence CLI meet the pins; every shared .NET framework has
-its base runtime; the update timer is in the declared state; and per account: home private, preflight
-clean, scope file current, Git identity and helper routing per scope, `dotnet`, offline `pnpm`, declared
-.NET tools and the system Intelligence CLI resolve.
+`tasks/check.yml` is read-only and fails on the first failed control: no other package source names a
+repository of the role with another keyring; managed files (including the gh wrapper) match the role and are
+root-owned; signing keys match the pinned fingerprints; extra packages are installed; npm tools are at their
+pins; Node.js and GitHub CLI are the pinned held packages; Corepack, the SDK set and the Intelligence CLI meet
+the pins; every shared .NET framework has its base runtime; the update timer is in the declared state; and per
+account: home mode, workspace (owned, mode, inside the home, no link), exactly the declared authorized keys,
+preflight clean, scope file current, Git identity and helper routing per scope, `dotnet`, offline `pnpm`, the
+account's .NET tools, the system Intelligence CLI and the gh wrapper resolve.
+
+Another file in `/etc/apt/sources.list.d` (or `/etc/apt/sources.list`) that names the NodeSource or GitHub CLI
+repository with another keyring stops the apply before any apt call and fails the check, naming the file: apt
+refuses conflicting `Signed-By` values. The role never deletes it.
 
 Token presence is reported per scope as `stored` or `pending owner authentication` and never fails the
 check: it is credential state, not installed configuration.
 
 ## Not in this role
 
-Coding-agent CLIs, terminal tools, the browser and the `agent-auth` helper are `agent_workstation`.
-Project-specific tools (document converters, API test runners) belong to the project's own roles.
+Coding-agent CLIs, terminal tools, the browser and the `agent-auth` helper are `agent_workstation` (or
+`coding_agent_updates` for channel-updated CLIs). Project-specific tools are declared through
+`dev_workstation_extra_packages` and `dev_workstation_npm_tools`, never written into the role.

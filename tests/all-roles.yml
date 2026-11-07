@@ -24,6 +24,9 @@
     - name: Import dev_workstation
       ansible.builtin.import_role:
         name: ainova.infra.dev_workstation
+    - name: Import coding_agent_updates
+      ansible.builtin.import_role:
+        name: ainova.infra.coding_agent_updates
     - name: Import agent_workstation
       ansible.builtin.import_role:
         name: ainova.infra.agent_workstation
@@ -64,6 +67,10 @@
     - name: Check dev_workstation
       ansible.builtin.import_role:
         name: ainova.infra.dev_workstation
+        tasks_from: check
+    - name: Check coding_agent_updates
+      ansible.builtin.import_role:
+        name: ainova.infra.coding_agent_updates
         tasks_from: check
     - name: Check agent_workstation
       ansible.builtin.import_role:

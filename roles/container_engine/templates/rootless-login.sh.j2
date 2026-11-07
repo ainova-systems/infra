@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# Login shells of the rootless accounts talk to their own daemon. Not a credential: the socket is the
+# account's own, and every other account is left untouched.
+case "$(id -un 2>/dev/null)" in
+  {{ container_engine_rootless_accounts | join('|') }})
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+    export XDG_RUNTIME_DIR DOCKER_HOST
+    ;;
+esac

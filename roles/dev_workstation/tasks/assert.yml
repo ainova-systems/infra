@@ -17,8 +17,12 @@
       - dev_workstation_dotnet_sdks | length > 0
       - dev_workstation_dotnet_sdks | map(attribute='version') | reject('match', '^[0-9]+\.[0-9]+\.[0-9]+$') | list | length == 0
       - dev_workstation_dotnet_sdks | map(attribute='sha512') | reject('match', '^[0-9a-f]{128}$') | list | length == 0
-      - dev_workstation_dotnet_tools | map(attribute='version') | reject('match', '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$') | list | length == 0
-      - dev_workstation_dotnet_tools | map(attribute='name') | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]*$') | list | length == 0
+      - dev_workstation_dotnet_tools | select('mapping') | list | length == dev_workstation_dotnet_tools | length
+      - dev_workstation_dotnet_tools | map('list') | flatten | unique | difference(['name', 'version']) | length == 0
+      - >-
+        dev_workstation_dotnet_tools | map(attribute='version', default='') | map('string')
+        | reject('match', '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$') | list | length == 0
+      - dev_workstation_dotnet_tools | map(attribute='name', default='') | map('string') | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]*$') | list | length == 0
       - dev_workstation_node_package_version is match('^' ~ dev_workstation_node_major ~ '\.[0-9]+\.[0-9]+-')
       - dev_workstation_corepack_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
       - dev_workstation_pnpm_fallback_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
@@ -30,7 +34,51 @@
       - dev_workstation_intelligence_update_randomized_delay | string is match('^[0-9a-z ]+$')
       - dev_workstation_node_key_fingerprints | reject('match', '^[0-9A-F]{40}$') | list | length == 0
       - dev_workstation_gh_key_fingerprints | reject('match', '^[0-9A-F]{40}$') | list | length == 0
-    fail_msg: A pinned version, digest or fingerprint is missing or not exact; .NET SDKs must be in ascending order.
+    fail_msg: A pinned version, digest or fingerprint is missing or not exact; .NET tools are {name, version} entries.
+    quiet: true
+
+- name: Assert the Intelligence CLI update mode
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_intelligence_update_mode in ['pinned', 'channel']
+      - dev_workstation_intelligence_update_channel | string is match('^[a-z][a-z0-9.-]*$')
+      - dev_workstation_intelligence_update_interval_hours | int in [1, 2, 3, 4, 6, 8, 12, 24]
+    fail_msg: >-
+      dev_workstation_intelligence_update_mode is pinned or channel; a channel is an npm dist-tag (a name, never a
+      version) and dev_workstation_intelligence_update_interval_hours divides 24.
+    quiet: true
+
+- name: Assert extra packages, environment, npm tools and the gh wrapper
+  ansible.builtin.assert:
+    that:
+      - dev_workstation_extra_packages is sequence and dev_workstation_extra_packages is not string
+      - dev_workstation_extra_packages | map('string') | reject('match', dev_workstation__package_pattern) | list | length == 0
+      - dev_workstation_environment is mapping
+      - dev_workstation_environment | list | reject('match', dev_workstation__env_name_pattern) | list | length == 0
+      - dev_workstation_environment | list | select('search', dev_workstation__secret_name_pattern) | list | length == 0
+      - dev_workstation_environment | list | select('match', '^LD_') | list | length == 0
+      - dev_workstation_environment | list | intersect(dev_workstation__reserved_env) | length == 0
+      - dev_workstation_environment.values() | map('string') | reject('match', dev_workstation__env_value_pattern) | list | length == 0
+      - dev_workstation_npm_tools is sequence and dev_workstation_npm_tools is not string
+      - dev_workstation_npm_tools | select('mapping') | list | length == dev_workstation_npm_tools | length
+      - dev_workstation_npm_tools | map('list') | flatten | unique | difference(['name', 'version']) | length == 0
+      - dev_workstation_npm_tools | map(attribute='name', default='') | map('string') | reject('match', dev_workstation__npm_name_pattern) | list | length == 0
+      - >-
+        dev_workstation_npm_tools | map(attribute='version', default='') | map('string')
+        | reject('match', dev_workstation__exact_version_pattern) | list | length == 0
+      - dev_workstation_npm_tools | map(attribute='name') | unique | list | length == dev_workstation_npm_tools | length
+      - >-
+        dev_workstation_npm_tools | map(attribute='name')
+        | intersect([dev_workstation_intelligence_package, 'npm', 'corepack', 'pnpm']) | length == 0
+      - dev_workstation_gh_wrapper is boolean
+      - dev_workstation_gh_wrapper_path is match('^/[A-Za-z0-9._/-]+/gh$')
+      - dev_workstation_gh_wrapper_path != '/usr/bin/gh'
+    fail_msg: >-
+      dev_workstation_extra_packages are distribution package names without versions; dev_workstation_environment
+      maps upper-case names that do not look like secrets (and are not the role's, loader or shell variables) to
+      plain-text values; dev_workstation_npm_tools are unique {name, version} entries at exact versions, never the
+      Intelligence CLI, npm, Corepack or pnpm; dev_workstation_gh_wrapper_path is a path ending in /gh other than
+      /usr/bin/gh.
     quiet: true
 
 - name: Assert .NET SDKs are listed in ascending version order
@@ -49,22 +97,57 @@
       - dev_workstation_accounts | type_debug == 'list'
       - dev_workstation_accounts | length > 0
       - dev_workstation_accounts | map(attribute='name') | unique | list | length == dev_workstation_accounts | length
-    fail_msg: dev_workstation_accounts must list at least one account, each name once.
+      - dev_workstation_home_mode in dev_workstation__private_modes
+    fail_msg: >-
+      dev_workstation_accounts must list at least one account, each name once; dev_workstation_home_mode is one of
+      {{ dev_workstation__private_modes | join(', ') }}.
     quiet: true
 
 - name: Assert every account entry
   ansible.builtin.assert:
     that:
       - dev_workstation_account | type_debug == 'dict'
-      - dev_workstation_account.keys() | difference(['name', 'git_name', 'git_email', 'credential_scopes']) | length == 0
+      - dev_workstation_account.keys() | difference(dev_workstation__account_keys) | length == 0
       - dev_workstation_account.name is defined and dev_workstation_account.name is match('^[a-z_][a-z0-9_-]{0,31}$')
       - dev_workstation_account.name != 'root'
       - dev_workstation_account.git_name is defined and dev_workstation_account.git_name | trim | length > 0
       - dev_workstation_account.git_name is not search('[\x00-\x1f\x7f]')
       - dev_workstation_account.git_email is defined and dev_workstation_account.git_email is match('^[^\s@]+@[^\s@]+\.[^\s@]+$')
+      - dev_workstation_account.home_mode | default(dev_workstation_home_mode) in dev_workstation__private_modes
+      - dev_workstation_account.workspace_mode | default('0750') in dev_workstation__private_modes
+      - dev_workstation_account.workspace_mode is not defined or dev_workstation_account.workspace is defined
+      - >-
+        dev_workstation_account.workspace is not defined
+        or (dev_workstation_account.workspace is string
+            and dev_workstation_account.workspace is match(dev_workstation__workspace_pattern)
+            and dev_workstation_account.workspace is not search('(^|/)\.\.?(/|$)'))
+      - >-
+        dev_workstation_account.authorized_keys is not defined
+        or (dev_workstation_account.authorized_keys is sequence and dev_workstation_account.authorized_keys is not string
+            and dev_workstation_account.authorized_keys | map('string') | reject('match', dev_workstation__public_key_pattern)
+                | list | length == 0)
+      - dev_workstation_account.dotnet_tools | default([]) is sequence and dev_workstation_account.dotnet_tools | default([]) is not string
+      - dev_workstation_account.dotnet_tools | default([]) | select('mapping') | list | length == dev_workstation_account.dotnet_tools | default([]) | length
+      - dev_workstation_account.dotnet_tools | default([]) | map('list') | flatten | unique | difference(['name', 'version']) | length == 0
+      - >-
+        dev_workstation_account.dotnet_tools | default([]) | map(attribute='name', default='') | map('string')
+        | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]*$') | list | length == 0
+      - >-
+        dev_workstation_account.dotnet_tools | default([]) | map(attribute='version', default='') | map('string')
+        | reject('match', '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$') | list | length == 0
+      - >-
+        dev_workstation_account.dotnet_tools | default([]) | map(attribute='name') | map('lower') | unique | list | length
+        == dev_workstation_account.dotnet_tools | default([]) | length
+      - >-
+        dev_workstation_account.gh_scope is not defined
+        or dev_workstation_account.gh_scope in (dev_workstation__scopes[dev_workstation_account.name] | default([])
+                                                | selectattr('kind', 'equalto', 'github') | map(attribute='name') | list)
     fail_msg: >-
-      Account entries accept only name, git_name, git_email and credential_scopes; credentials are not
-      allowed here. Offending entry: {{ dev_workstation_account.name | default('(unnamed)') }}
+      Account entries accept only {{ dev_workstation__account_keys | join(', ') }}; credentials are not allowed here.
+      home_mode and workspace_mode are {{ dev_workstation__private_modes | join(' or ') }}; workspace is an absolute
+      path without . or .. segments; authorized_keys lists public keys (type, body, optional comment);
+      dotnet_tools are unique {name, version} entries at exact versions; gh_scope names a github scope of the
+      account. Offending entry: {{ dev_workstation_account.name | default('(unnamed)') }}
     quiet: true
   loop: "{{ dev_workstation_accounts }}"
   loop_control:

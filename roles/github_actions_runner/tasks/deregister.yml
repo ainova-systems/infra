@@ -36,25 +36,12 @@
 
 - name: Deregister from the forge {{ github_actions_runner__name }}
   ansible.builtin.command:
-    argv:
-      - docker
-      - compose
-      - --project-directory
-      - "{{ github_actions_runner__dir }}"
-      - --file
-      - "{{ github_actions_runner__definition }}"
-      - run
-      - --rm
-      - --no-deps
-      - -T
-      - --entrypoint
-      - /bin/sh
-      - runner
-      - -c
-      - "{{ github_actions_runner__stdin_exec }}"
-      - "{{ github_actions_runner_data_path }}/config.sh"
-      - remove
-      - --unattended
+    argv: >-
+      {{ github_actions_runner__docker + ['compose', '--project-directory', github_actions_runner__dir,
+          '--file', github_actions_runner__definition,
+          'run', '--rm', '--no-deps', '-T', '--entrypoint', '/bin/sh', 'runner',
+          '-c', github_actions_runner__stdin_exec, github_actions_runner_data_path ~ '/config.sh',
+          'remove', '--unattended'] }}
     stdin: "{{ github_actions_runner__removal_token }}"
   register: github_actions_runner__deregistration
   changed_when: github_actions_runner__deregistration.rc == 0

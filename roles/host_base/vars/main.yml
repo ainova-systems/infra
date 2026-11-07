@@ -11,6 +11,21 @@ host_base__key_pattern: >-
   ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)
   [A-Za-z0-9+/]+={0,3}( \S+)?$
 host_base__sudoers_file: /etc/sudoers.d/host-base-admin
+# AllowTcpForwarding as sshd takes it and as `sshd -T` prints it.
+host_base__tcp_forwarding: >-
+  {{ 'yes' if host_base_ssh_allow_tcp_forwarding is sameas true
+     else ('no' if host_base_ssh_allow_tcp_forwarding is sameas false
+     else host_base_ssh_allow_tcp_forwarding | string | lower) }}
+# A hostname: lowercase labels of letters, digits and inner hyphens, dot-separated, at most 253 characters.
+host_base__hostname_pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
+# The /etc/hosts line of the hostname: the full name, then the short name when they differ.
+host_base__hosts_line: >-
+  127.0.1.1 {{ host_base_hostname }}{{ (' ' ~ host_base_hostname.split('.')[0]) if '.' in host_base_hostname else '' }}
+# A distribution package name (Debian policy), never a version or release suffix.
+host_base__package_pattern: '^[a-z0-9][a-z0-9+.-]+$'
+# Package state probe as data, so tests/local-probes.yml runs the exact argv the check runs. Prints
+# "<name> <status>" per known name (status "installed" when installed); an unknown name is missing.
+host_base__dpkg_status_argv: [dpkg-query, --show, '--showformat=${Package} ${db:Status-Status}\n']
 host_base__timesyncd_dropin: /etc/systemd/timesyncd.conf.d/host-base.conf
 host_base__chrony_sources: /etc/chrony/sources.d/host-base.sources
 # The entry of host_base_releases for the running release; empty when there is none (the assert refuses that).

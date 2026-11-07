@@ -6,6 +6,10 @@ container_engine_mode: rootful
 # subordinate ID ranges of at least 65536 (Ubuntu allocates them when the account is created).
 container_engine_rootless_accounts: []
 
+# Login shells of the rootless accounts export DOCKER_HOST (their own socket) and, when unset,
+# XDG_RUNTIME_DIR, from a root-owned /etc/profile.d snippet. false removes the snippet.
+container_engine_rootless_login_env: true
+
 # Pinned packages from the signed Docker apt repository. The upstream version; the apt revision suffix
 # is resolved on the host and must start with "<epoch>:<version>-".
 container_engine_version: "29.7.2"

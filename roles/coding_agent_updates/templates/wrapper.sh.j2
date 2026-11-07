@@ -1,0 +1,7 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# {{ item.tool }} from coding_agent_updates: vendor self-updates are off, the timer is the one update path.
+{% for key, value in coding_agent_updates_wrapper_env | dictsort %}
+export {{ key }}={{ value | quote }}
+{% endfor %}
+exec {{ (coding_agent_updates_root ~ '/current/' ~ item.tool) | quote }} "$@"

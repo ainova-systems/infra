@@ -51,8 +51,15 @@
       - host_base_firewall_remove | rejectattr('from', 'defined') | list | length == 0
       - host_base_firewall_remove | map(attribute='proto', default='') | reject('in', ['tcp', 'udp']) | list | length == 0
       - host_base_firewall_remove | map(attribute='from') | map('string') | reject('match', host_base__source_pattern) | list | length == 0
+      - host_base_ssh_allow_tcp_forwarding is boolean or host_base_ssh_allow_tcp_forwarding | string | lower in ['yes', 'no', 'local', 'remote']
+      - host_base_hostname is string
+      - host_base_hostname == '' or (host_base_hostname is match(host_base__hostname_pattern) and host_base_hostname | length <= 253)
+      - host_base_extra_packages is sequence and host_base_extra_packages is not string
+      - host_base_extra_packages | map('string') | reject('match', host_base__package_pattern) | list | length == 0
     fail_msg: >-
       host_base needs host_base_admin_user (not root), at least one public key in host_base_admin_keys
       (type and body only, never a private key), a valid SSH port, at least one SSH source, and firewall
-      items shaped {port, proto: tcp|udp, from: any|<address or CIDR>} (an empty source is refused).
+      items shaped {port, proto: tcp|udp, from: any|<address or CIDR>} (an empty source is refused), and
+      host_base_extra_packages as distribution package names without versions, host_base_ssh_allow_tcp_forwarding
+      true, false, local or remote, and host_base_hostname empty or a lowercase hostname.
     quiet: true

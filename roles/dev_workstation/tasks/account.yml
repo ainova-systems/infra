@@ -89,6 +89,75 @@
       check_mode: false
       when: not ansible_check_mode
 
+    - name: Configure the workspace of {{ dev_workstation_account.name }}
+      when: dev_workstation_account.workspace is defined
+      block:
+        - name: Read the workspace of {{ dev_workstation_account.name }}
+          ansible.builtin.stat:
+            path: "{{ dev_workstation_account.workspace }}"
+            follow: false
+            get_checksum: false
+          register: dev_workstation_workspace_stat
+
+        - name: Assert the workspace lies in the home and is no link for {{ dev_workstation_account.name }}
+          ansible.builtin.assert:
+            that:
+              - dev_workstation_account.workspace is match((dev_workstation_home | regex_escape) ~ '/')
+              - >-
+                not dev_workstation_workspace_stat.stat.exists
+                or (dev_workstation_workspace_stat.stat.isdir and not dev_workstation_workspace_stat.stat.islnk)
+            fail_msg: >-
+              The workspace {{ dev_workstation_account.workspace }} of {{ dev_workstation_account.name }} must be a
+              directory inside {{ dev_workstation_home }}, never a link or a file.
+            quiet: true
+
+        # Created as the account, so it is the account's own directory; nothing is cloned into it.
+        - name: Create the workspace of {{ dev_workstation_account.name }}
+          ansible.builtin.file:
+            path: "{{ dev_workstation_account.workspace }}"
+            state: directory
+            mode: "{{ dev_workstation_account.workspace_mode | default('0750') }}"
+            follow: false
+
+    - name: Configure the authorized keys of {{ dev_workstation_account.name }}
+      when: dev_workstation_account.authorized_keys is defined
+      block:
+        - name: Read the SSH paths of {{ dev_workstation_account.name }}
+          ansible.builtin.stat:
+            path: "{{ item }}"
+            follow: false
+            get_checksum: false
+          loop:
+            - "{{ dev_workstation_home }}/.ssh"
+            - "{{ dev_workstation_home }}/.ssh/authorized_keys"
+          register: dev_workstation_ssh_paths
+
+        - name: Assert the SSH paths are no links for {{ dev_workstation_account.name }}
+          ansible.builtin.assert:
+            that:
+              - >-
+                not dev_workstation_ssh_paths.results[0].stat.exists
+                or (dev_workstation_ssh_paths.results[0].stat.isdir and not dev_workstation_ssh_paths.results[0].stat.islnk)
+              - >-
+                not dev_workstation_ssh_paths.results[1].stat.exists
+                or (dev_workstation_ssh_paths.results[1].stat.isreg and not dev_workstation_ssh_paths.results[1].stat.islnk)
+            fail_msg: "~/.ssh of {{ dev_workstation_account.name }} or its authorized_keys is a link or of the wrong type."
+            quiet: true
+
+        - name: Create the SSH directory of {{ dev_workstation_account.name }}
+          ansible.builtin.file:
+            path: "{{ dev_workstation_home }}/.ssh"
+            state: directory
+            mode: "0700"
+            follow: false
+
+        - name: Write exactly the declared authorized keys of {{ dev_workstation_account.name }}
+          ansible.builtin.copy:
+            content: "{{ dev_workstation__authorized_keys_content }}"
+            dest: "{{ dev_workstation_home }}/.ssh/authorized_keys"
+            mode: "0600"
+            follow: false
+
     - name: Prefetch the fallback pnpm for {{ dev_workstation_account.name }}
       ansible.builtin.command:
         argv: [/usr/local/bin/corepack, install, --global, "pnpm@{{ dev_workstation_pnpm_fallback_version }}"]
@@ -109,7 +178,7 @@
           - "{{ item.version }}"
         chdir: /
         creates: "{{ dev_workstation_home }}/.dotnet/tools/.store/{{ item.name | lower }}/{{ item.version }}"
-      loop: "{{ dev_workstation_dotnet_tools }}"
+      loop: "{{ dev_workstation__dotnet_tools_of[dev_workstation_account.name] }}"
       loop_control:
         label: "{{ item.name }} {{ item.version }}"
 

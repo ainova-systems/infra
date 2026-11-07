@@ -44,6 +44,30 @@
     update_cache: true
     cache_valid_time: 3600
 
+- name: Install extra distribution packages
+  ansible.builtin.apt:
+    name: "{{ host_base_extra_packages }}"
+    state: present
+    install_recommends: false
+  when: host_base_extra_packages | length > 0
+
+- name: Set the hostname and its local address
+  when: host_base_hostname | length > 0
+  block:
+    - name: Set the static hostname
+      ansible.builtin.hostname:
+        name: "{{ host_base_hostname }}"
+        use: systemd
+
+    - name: Map the hostname to the local address
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        line: "{{ host_base__hosts_line }}"
+        owner: root
+        group: root
+        mode: "0644"
+
 # Account and keys come first: the SSH hardening below removes every other way in.
 - name: Create admin account
   ansible.builtin.user:
@@ -88,7 +112,7 @@
     ssh_server_password_login: false
     ssh_challengeresponseauthentication: false
     ssh_allow_users: "{{ host_base__ssh_users | join(' ') }}"
-    ssh_allow_tcp_forwarding: "{{ host_base_ssh_allow_tcp_forwarding }}"
+    ssh_allow_tcp_forwarding: "{{ host_base__tcp_forwarding }}"
     ssh_allow_agent_forwarding: "{{ host_base_ssh_allow_agent_forwarding }}"
 
 # Allows are written before the deny default is enabled, so SSH never drops mid-run.

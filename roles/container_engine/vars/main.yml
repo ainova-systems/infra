@@ -22,3 +22,33 @@ container_engine__daemon_config: >-
 container_engine__rootlesskit_profile: /etc/apparmor.d/rootlesskit
 # Root-only wrapper that runs a command as a rootless account with its session bus and socket.
 container_engine__as_account: /usr/local/libexec/container-engine-as
+# Login-shell snippet of the rootless accounts.
+container_engine__login_env: /etc/profile.d/container-engine-rootless.sh
+container_engine__login_env_wanted: >-
+  {{ container_engine_rootless_login_env | bool and container_engine_rootless_accounts | length > 0 }}
+
+# Prints "<file><TAB><signed-by keyrings>" for every active source file in the directory (and the main
+# sources.list beside it) that names the repository URL. apt refuses two entries for one repository with
+# different Signed-By values, so another file naming the URL with another keyring stops the role.
+container_engine__apt_sources_dir: /etc/apt/sources.list.d
+container_engine__apt_sources_probe: |
+  dir=$1 url=$2
+  for f in "$dir"/*.list "$dir"/*.sources "$dir"/../sources.list; do
+    [ -f "$f" ] || continue
+    grep -v '^[[:space:]]*#' "$f" | grep -qF -- "$url" || continue
+    keys=$(grep -v '^[[:space:]]*#' "$f" \
+      | sed -nE 's/.*[Ss][Ii][Gg][Nn][Ee][Dd]-[Bb][Yy][[:space:]]*[=:][[:space:]]*([^] ,[:space:]]+).*/\1/p' \
+      | sort -u | tr '\n' ' ')
+    printf '%s\t%s\n' "$f" "$keys"
+  done
+# Files other than the role's own source naming the engine repository with any keyring but the role's.
+container_engine__apt_conflicts: >-
+  {%- set out = [] -%}
+  {%- for line in container_engine__apt_sources.stdout_lines | default([]) if line.split('\t') | length == 2 -%}
+  {%-   set file = line.split('\t')[0] -%}
+  {%-   if (file | basename) != (container_engine__source_file | basename)
+          and line.split('\t')[1].split() != [container_engine__keyring] -%}
+  {%-     set _ = out.append(file) -%}
+  {%-   endif -%}
+  {%- endfor -%}
+  {{ out }}

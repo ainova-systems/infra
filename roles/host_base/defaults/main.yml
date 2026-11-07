@@ -16,7 +16,9 @@ host_base_ssh_allow_from:
   - any
 # Accounts besides the admin allowed to log in over SSH.
 host_base_ssh_extra_users: []
-host_base_ssh_allow_tcp_forwarding: "no"
+# TCP forwarding for SSH sessions: false (default) refuses it; true allows it (an editor's remote-SSH
+# extension and `ssh -L` tunnels need it). "local" or "remote" allow one direction only.
+host_base_ssh_allow_tcp_forwarding: false
 host_base_ssh_allow_agent_forwarding: false
 
 # Firewall (ufw): default deny inbound, allow outbound, explicit allows below.
@@ -25,6 +27,14 @@ host_base_firewall_allow: []
 # Allows to delete, same shape: ufw keeps a rule until it is removed explicitly.
 host_base_firewall_remove: []
 host_base_firewall_logging: low
+
+# Static hostname, also mapped to 127.0.1.1 in /etc/hosts. Empty leaves both untouched.
+host_base_hostname: ""
+
+# Further distribution packages every host of the project needs (a hypervisor guest agent, for example).
+# Package names only: the version is the one the signed distribution archive serves, kept current by the
+# unattended security updates; never `latest`, never a version pin here.
+host_base_extra_packages: []
 
 # Unattended security updates.
 host_base_auto_updates: true

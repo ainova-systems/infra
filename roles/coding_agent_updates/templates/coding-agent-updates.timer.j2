@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Coding-agent CLI updates every {{ coding_agent_updates_interval_hours }} hours
+
+[Timer]
+OnCalendar={{ coding_agent_updates__on_calendar }}
+RandomizedDelaySec={{ coding_agent_updates_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

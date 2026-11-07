@@ -1,6 +1,21 @@
 ---
 # github_actions_runner: self-hosted GitHub Actions runners, one Compose project per instance,
-# on a rootful Docker daemon. Registration happens once per data volume; no token is ever stored.
+# on the rootful daemon or on one account's rootless daemon. Registration happens once per data
+# volume; no token is ever stored.
+
+# Daemon the runners use: rootful (the system daemon) | rootless (the daemon of
+# github_actions_runner_account, which container_engine runs rootless). A rootless runner shares that
+# account's Docker authority: it is not an isolation boundary from the account.
+github_actions_runner_daemon: rootful
+
+# Rootless only (required there, empty in rootful mode): the unprivileged account whose rootless daemon
+# runs the runners. Every Docker command of the role runs as this account against its own socket
+# /run/user/<uid>/docker.sock, which is mounted into each runner as /var/run/docker.sock.
+github_actions_runner_account: ""
+
+# Rootless only: load and persist br_netfilter. A rootless daemon cannot load kernel modules, and
+# nested Docker networking inside jobs needs bridge netfilter (a rootful daemon loads it itself).
+github_actions_runner_bridge_netfilter: true
 
 # Registration scope: a repository (https://<forge-host>/<owner>/<repo>) or an organization
 # (https://<forge-host>/<org>). Required.
@@ -9,8 +24,9 @@ github_actions_runner_scope_url: ""
 # Organization runner group to register into. Empty: the forge default group.
 github_actions_runner_group: ""
 
-# Runner image pinned by digest: <registry>/<repo>:<tag>@sha256:<64 hex> (tag optional). Required.
-# The image must meet the contract in the README ("Image contract").
+# Runner image pinned by digest: <registry>/<repo>:<tag>@sha256:<64 hex> (tag optional). Required
+# unless every instance sets its own image. The image must meet the contract in the README
+# ("Image contract").
 github_actions_runner_image: ""
 
 # Instances on this host. Keys:
@@ -20,7 +36,10 @@ github_actions_runner_image: ""
 #   memory      memory limit in MiB, integer >= 1024; swap is disabled (required)
 #   state       present (registered and running) | stopped (registered, container stopped) | absent
 #   volume      data volume name holding the registration and work directory (default <name>-data)
-#   adopt       true: accept an existing volume this role did not create (migration); default false
+#   adopt       true: take over an existing volume this role did not create, and replace an idle foreign
+#               container of the same name that mounts it (migration); default false
+#   image       image of this instance, pinned by digest; default github_actions_runner_image
+#   env         extra non-secret environment of this instance, merged over github_actions_runner_extra_env
 #   deregister  on state absent, remove the forge registration first; default true
 #   purge       on state absent, also delete the data volume and definition; default false
 #   - name: build-runner-01
@@ -32,10 +51,13 @@ github_actions_runner_instances: []
 # Labels appended to every instance, for example one per-host routing label.
 github_actions_runner_common_labels: []
 
-# Root-owned directory holding one Compose definition per instance (0700 directory, 0600 file).
+# Root-owned directory holding one Compose definition per instance. Rootful: 0700 directory, 0600 file.
+# Rootless: group of the runner account, 0750 directory, 0640 file, so that account's Compose client reads
+# the definitions it cannot change.
 github_actions_runner_base_dir: /etc/github-actions-runner
 
-# Rootful daemon socket mounted into every runner. The socket group is read on the host, never assumed.
+# Rootful only: the daemon socket mounted into every runner. The socket group is read on the host, never
+# assumed. Rootless mode mounts the account's socket and resolves its group inside the daemon's namespace.
 github_actions_runner_docker_socket: /var/run/docker.sock
 
 # Runner directory inside the image; the data volume is mounted here and keeps .runner/.credentials.

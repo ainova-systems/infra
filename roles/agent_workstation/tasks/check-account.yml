@@ -68,6 +68,28 @@
   loop_control:
     label: "{{ item.item.command }}"
 
+- name: Resolve the external coding CLIs of {{ agent_workstation__check_name }}
+  ansible.builtin.command:
+    expand_argument_vars: false
+    argv:
+      - env
+      - -i
+      - HOME={{ agent_workstation__check_home }}
+      - PATH={{ agent_workstation_herdr_path | replace('%h', agent_workstation__check_home) }}
+      - sh
+      - -c
+      - command -v "$1"
+      - sh
+      - "{{ agent_workstation__herdr_runtime_commands[item] }}"
+  loop: "{{ agent_workstation_herdr_integrations }}"
+  register: agent_workstation__check_external
+  changed_when: false
+  check_mode: false
+  failed_when: agent_workstation__check_external.stdout is not match('^/')
+  become: true
+  become_user: "{{ agent_workstation__check_name }}"
+  when: agent_workstation_coding_cli_mode == 'external'
+
 - name: Run tool version checks as {{ agent_workstation__check_name }}
   ansible.builtin.command:
     argv:
@@ -144,6 +166,35 @@
   loop: "{{ agent_workstation__check_credentials.results | selectattr('stat.exists') | list }}"
   loop_control:
     label: "{{ item.item.name }}"
+
+- name: Read service token files of {{ agent_workstation__check_name }}
+  ansible.builtin.stat:
+    path: "{{ agent_workstation__check_home }}/.config/service-tokens/{{ item.name }}.env"
+    get_checksum: false
+  register: agent_workstation__check_service_tokens
+  loop: "{{ agent_workstation__service_tokens_of[agent_workstation__check_name] | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Check stored service tokens are private for {{ agent_workstation__check_name }}
+  ansible.builtin.assert:
+    that:
+      - not item.stat.islnk and item.stat.isreg
+      - item.stat.pw_name == agent_workstation__check_name
+      - item.stat.mode == '0600'
+      - item.stat.nlink == 1
+    fail_msg: "service token {{ item.item.name }} of {{ agent_workstation__check_name }} is not a private 0600 file"
+    quiet: true
+  loop: "{{ agent_workstation__check_service_tokens.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Collect service tokens awaiting the owner for {{ agent_workstation__check_name }}
+  ansible.builtin.set_fact:
+    agent_workstation__service_required: >-
+      {{ (agent_workstation__service_required | default([]))
+         + (agent_workstation__check_service_tokens.results | rejectattr('stat.exists')
+            | map(attribute='item.name') | map('regex_replace', '^', agent_workstation__check_name ~ '/') | list) }}
 
 - name: Collect scopes awaiting the owner for {{ agent_workstation__check_name }}
   ansible.builtin.set_fact:

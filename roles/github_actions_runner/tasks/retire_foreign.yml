@@ -1,0 +1,26 @@
+---
+# Replace a container this role did not create (loop_var github_actions_runner_instance). Reached only with
+# adopt: true for a container that mounts the instance's volume at the runner directory (probe.yml) and is
+# idle (instance.yml): its registration stays in the volume and the role's container takes it over.
+
+- name: Report the replacement of the foreign container {{ github_actions_runner__name }}
+  ansible.builtin.debug:
+    msg: >-
+      would stop and remove the foreign container {{ github_actions_runner__name }}; volume
+      {{ github_actions_runner__volume }} and its registration are kept
+  when: ansible_check_mode
+
+- name: Stop the foreign container {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv: "{{ github_actions_runner__docker + ['container', 'stop', '--time', '30', '--', github_actions_runner__name] }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - github_actions_runner__running
+
+# Without --volumes: a named volume is never removed with its container.
+- name: Remove the foreign container {{ github_actions_runner__name }}
+  ansible.builtin.command:
+    argv: "{{ github_actions_runner__docker + ['container', 'rm', '--', github_actions_runner__name] }}"
+  changed_when: true
+  when: not ansible_check_mode

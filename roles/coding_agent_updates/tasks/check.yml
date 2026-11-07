@@ -1,0 +1,147 @@
+---
+# Read-only. Every probe uses platform tools and runs in --check too; one assert at the end lists every failed
+# control and fails the host.
+
+- name: Validate host and inputs
+  ansible.builtin.include_tasks: assert.yml
+
+- name: Read the managed files
+  ansible.builtin.stat:
+    path: "{{ item.dest }}"
+    follow: false
+    get_checksum: false
+  loop: >-
+    {{ coding_agent_updates__files
+       + (coding_agent_updates__commands | map(attribute='command')
+          | map('regex_replace', '^', coding_agent_updates_wrapper_dir ~ '/') | map('community.general.dict_kv', 'dest')
+          | map('combine', {'mode': '0755'}) | list) }}
+  loop_control:
+    label: "{{ item.dest }}"
+  register: coding_agent_updates__file_stats
+
+- name: Read the managed file contents
+  ansible.builtin.command:
+    argv: [cat, --, "{{ item.dest }}"]
+  loop: "{{ coding_agent_updates__files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  register: coding_agent_updates__contents
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read the wrapper contents
+  ansible.builtin.command:
+    argv: [cat, --, "{{ coding_agent_updates_wrapper_dir }}/{{ item.command }}"]
+  loop: "{{ coding_agent_updates__commands }}"
+  loop_control:
+    label: "{{ item.command }}"
+  register: coding_agent_updates__wrappers
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read the timer state
+  ansible.builtin.command:
+    argv: [systemctl, show, "{{ coding_agent_updates__unit }}.timer", --property=UnitFileState, --property=ActiveState]
+  register: coding_agent_updates__timer
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read the update ledger
+  ansible.builtin.command:
+    argv: [cat, --, "{{ coding_agent_updates_state_dir }}/failed-components", "{{ coding_agent_updates_state_dir }}/last-success"]
+  register: coding_agent_updates__ledger
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read the current selections
+  ansible.builtin.stat:
+    path: "{{ coding_agent_updates_root }}/current/{{ item.name }}"
+    follow: false
+    get_checksum: false
+  loop: "{{ coding_agent_updates__tools }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: coding_agent_updates__selections
+
+- name: Read the account links
+  ansible.builtin.stat:
+    path: "{{ item[0].stdout.split(':')[5] }}/.local/bin/{{ item[1].command }}"
+    follow: false
+    get_checksum: false
+  loop: "{{ coding_agent_updates__passwd.results | product(coding_agent_updates__commands) | list }}"
+  loop_control:
+    label: "{{ item[0].item }}/{{ item[1].command }}"
+  register: coding_agent_updates__links
+
+- name: Run each CLI as each account
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - "{{ item[0].item }}"
+      - --
+      - env
+      - -i
+      - HOME={{ item[0].stdout.split(':')[5] }}
+      - PATH={{ item[0].stdout.split(':')[5] }}/.local/bin:/usr/local/bin:/usr/bin:/bin
+      - "{{ item[0].stdout.split(':')[5] }}/.local/bin/{{ item[1].command }}"
+      - --version
+  loop: "{{ coding_agent_updates__passwd.results | product(coding_agent_updates__commands) | list }}"
+  loop_control:
+    label: "{{ item[0].item }}/{{ item[1].command }}"
+  register: coding_agent_updates__versions
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert coding_agent_updates controls
+  ansible.builtin.assert:
+    that:
+      - coding_agent_updates__failures | length == 0
+    fail_msg: "coding_agent_updates FAILED: {{ coding_agent_updates__failures | join('; ') }}"
+    success_msg: >-
+      coding_agent_updates OK: {{ coding_agent_updates_tools | join(', ') }} on {{ coding_agent_updates_channel }},
+      every {{ coding_agent_updates_interval_hours }} h, for {{ coding_agent_updates_accounts | join(', ') }}
+  vars:
+    coding_agent_updates__file_failures: >-
+      {%- for r in coding_agent_updates__file_stats.results -%}
+      {%-   if not (r.stat.isreg | default(false)) or r.stat.islnk or r.stat.uid != 0 or r.stat.mode != r.item.mode -%}
+      {{ r.item.dest }} missing or not a root-owned {{ r.item.mode }} file;{%- endif -%}
+      {%- endfor -%}
+      {%- for r in coding_agent_updates__contents.results -%}
+      {%-   if r.rc != 0 or (r.stdout | trim) != (lookup('ansible.builtin.template', r.item.src) | trim) -%}
+      {{ r.item.dest }} differs from the role;{%- endif -%}
+      {%- endfor -%}
+      {%- for r in coding_agent_updates__wrappers.results -%}
+      {%-   if r.rc != 0 or (r.stdout | trim) != (lookup('ansible.builtin.template', 'wrapper.sh.j2', template_vars={'item': r.item}) | trim) -%}
+      wrapper {{ r.item.command }} differs from the role;{%- endif -%}
+      {%- endfor -%}
+    coding_agent_updates__state_failures: >-
+      {{ '' if 'UnitFileState=enabled' in coding_agent_updates__timer.stdout_lines
+              and 'ActiveState=active' in coding_agent_updates__timer.stdout_lines
+         else 'update timer not enabled and active;' }}
+      {{- '' if coding_agent_updates__ledger.rc == 0 and (coding_agent_updates__ledger.stdout_lines | first | default('') | trim) == '0'
+         else 'no successful update run or the last run had failed CLIs (' ~ coding_agent_updates_state_dir ~ ');' }}
+      {%- for r in coding_agent_updates__selections.results -%}
+      {%-   if not (r.stat.islnk | default(false))
+            or not (r.stat.lnk_target | default('')).startswith(coding_agent_updates_root ~ '/' ~ r.item.name ~ '-') -%}
+      no current selection of {{ r.item.name }};
+      {%-   endif -%}
+      {%- endfor -%}
+    coding_agent_updates__account_failures: >-
+      {%- for r in coding_agent_updates__links.results -%}
+      {%-   if not (r.stat.islnk | default(false))
+            or r.stat.lnk_target != coding_agent_updates_wrapper_dir ~ '/' ~ r.item[1].command -%}
+      {{ r.item[0].item }} ~/.local/bin/{{ r.item[1].command }} is not the wrapper link;
+      {%-   endif -%}
+      {%- endfor -%}
+      {%- for r in coding_agent_updates__versions.results if r.rc != 0 -%}
+      {{ r.item[0].item }} cannot run {{ r.item[1].command }};
+      {%- endfor -%}
+    coding_agent_updates__failures: >-
+      {{ ((coding_agent_updates__file_failures | default('', true)) ~ (coding_agent_updates__state_failures | default('', true))
+          ~ (coding_agent_updates__account_failures | default('', true))).split(';') | map('trim') | select | list }}

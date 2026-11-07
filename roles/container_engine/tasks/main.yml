@@ -81,6 +81,31 @@
     quiet: true
   when: container_engine_rootless_accounts | length > 0
 
+- name: Read other package sources of the engine repository
+  ansible.builtin.command:
+    expand_argument_vars: false
+    argv:
+      - sh
+      - -c
+      - "{{ container_engine__apt_sources_probe }}"
+      - sh
+      - "{{ container_engine__apt_sources_dir }}"
+      - "{{ container_engine_apt_repo_url }}"
+  register: container_engine__apt_sources
+  changed_when: false
+  check_mode: false
+
+# Before any apt run: a conflicting source makes every package list refresh fail. Never deleted by the role.
+- name: Assert no other source names the engine repository with another keyring
+  ansible.builtin.assert:
+    that:
+      - container_engine__apt_conflicts | length == 0
+    fail_msg: >-
+      {{ container_engine__apt_conflicts | join(', ') }} name {{ container_engine_apt_repo_url }} with another keyring
+      than {{ container_engine__keyring }}, which apt refuses (conflicting Signed-By). Remove or fix them
+      deliberately; the role never deletes another tool's source.
+    quiet: true
+
 - name: Install engine prerequisites
   ansible.builtin.apt:
     name: >-
@@ -251,6 +276,21 @@
   loop: "{{ container_engine_rootless_accounts }}"
   loop_control:
     loop_var: container_engine__account
+
+- name: Export the rootless daemon to login shells of its accounts
+  ansible.builtin.template:
+    src: rootless-login.sh.j2
+    dest: "{{ container_engine__login_env }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: container_engine__login_env_wanted | bool
+
+- name: Remove the rootless login snippet
+  ansible.builtin.file:
+    path: "{{ container_engine__login_env }}"
+    state: absent
+  when: not container_engine__login_env_wanted | bool
 
 - name: Flush engine handlers before cleanup units
   ansible.builtin.meta: flush_handlers

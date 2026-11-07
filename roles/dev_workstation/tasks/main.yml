@@ -5,9 +5,32 @@
 - name: Validate host and inputs
   ansible.builtin.include_tasks: assert.yml
 
+# Before any apt run: a conflicting source makes every package list refresh fail.
+- name: Read other package sources of this role's repositories
+  ansible.builtin.command:
+    expand_argument_vars: false
+    argv: [sh, -c, "{{ dev_workstation__apt_sources_probe }}", sh, "{{ dev_workstation__apt_sources_dir }}", "{{ item.url }}"]
+  loop: "{{ dev_workstation__apt_repos }}"
+  loop_control:
+    label: "{{ item.list }}"
+  register: dev_workstation_apt_sources
+  changed_when: false
+  check_mode: false
+
+# Never deleted by the role: another tool's source is removed or fixed deliberately.
+- name: Assert no other source names a repository of this role with another keyring
+  ansible.builtin.assert:
+    that:
+      - dev_workstation__apt_conflicts | length == 0
+    fail_msg: >-
+      Other package sources name a repository of this role with another keyring, which apt refuses (conflicting
+      Signed-By): {{ dev_workstation__apt_conflicts | join(', ') }}. Remove or fix them deliberately; the role never
+      deletes another tool's source.
+    quiet: true
+
 - name: Install distribution packages
   ansible.builtin.apt:
-    name: "{{ dev_workstation_packages }}"
+    name: "{{ dev_workstation_packages + dev_workstation_extra_packages }}"
     state: present
     install_recommends: false
     update_cache: true
@@ -76,7 +99,7 @@
     path: "{{ dev_workstation_user.home }}"
     state: directory
     owner: "{{ dev_workstation_user.name }}"
-    mode: "{{ dev_workstation_home_mode }}"
+    mode: "{{ dev_workstation_user.dev_workstation_account.home_mode | default(dev_workstation_home_mode) }}"
     follow: false
   loop: "{{ dev_workstation_users.results }}"
   loop_control:
@@ -212,6 +235,32 @@
   changed_when: true
   when: dev_workstation_intelligence_current is version(dev_workstation_intelligence_version, '<')
 
+- name: Read the installed npm tools
+  ansible.builtin.command:
+    argv: "{{ dev_workstation__npm_global_argv }}"
+  register: dev_workstation_npm_global
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: dev_workstation_npm_tools | length > 0
+
+# Lifecycle scripts never run: a package's install hooks would execute as root.
+- name: Install the pinned npm tools
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/npm
+      - install
+      - --global
+      - --ignore-scripts
+      - --no-audit
+      - --no-fund
+      - "{{ item.name }}@{{ item.version }}"
+  changed_when: true
+  loop: "{{ dev_workstation_npm_tools }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.version }}"
+  when: dev_workstation__npm_installed[item.name] | default('') != item.version | string
+
 - name: Write the Intelligence CLI update units
   ansible.builtin.template:
     src: "{{ item }}.j2"
@@ -246,6 +295,56 @@
     - {src: credential-preflight.sh.j2, dest: "{{ dev_workstation_libexec_dir }}/credential-preflight"}
   loop_control:
     label: "{{ item.dest }}"
+
+# --- GitHub CLI wrapper ---------------------------------------------------------------------------
+
+- name: Read the GitHub CLI wrapper path
+  ansible.builtin.stat:
+    path: "{{ dev_workstation_gh_wrapper_path }}"
+    follow: false
+    get_checksum: false
+  register: dev_workstation_gh_wrapper_stat
+
+- name: Read the owner of an existing GitHub CLI wrapper
+  ansible.builtin.command:
+    argv: [grep, -qxF, "# Managed by the dev_workstation role.", "{{ dev_workstation_gh_wrapper_path }}"]
+  register: dev_workstation_gh_wrapper_owned
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: dev_workstation_gh_wrapper_stat.stat.exists
+
+# Another tool's file at the path is never overwritten or removed: it is retired deliberately.
+- name: Assert the GitHub CLI wrapper path holds nothing foreign
+  ansible.builtin.assert:
+    that:
+      - >-
+        not dev_workstation_gh_wrapper_stat.stat.exists
+        or (dev_workstation_gh_wrapper_stat.stat.isreg and dev_workstation_gh_wrapper_owned.rc == 0)
+    fail_msg: >-
+      {{ dev_workstation_gh_wrapper_path }} exists and was not written by this role. Retire it deliberately (it may
+      hand gh a token from another store), then apply again.
+    quiet: true
+  when: dev_workstation_gh_wrapper | bool
+
+- name: Install the GitHub CLI wrapper
+  ansible.builtin.template:
+    src: gh-wrapper.sh.j2
+    dest: "{{ dev_workstation_gh_wrapper_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+    follow: false
+  when: dev_workstation_gh_wrapper | bool
+
+- name: Remove the GitHub CLI wrapper this role wrote
+  ansible.builtin.file:
+    path: "{{ dev_workstation_gh_wrapper_path }}"
+    state: absent
+  when:
+    - not dev_workstation_gh_wrapper | bool
+    - dev_workstation_gh_wrapper_stat.stat.exists
+    - dev_workstation_gh_wrapper_owned.rc | default(1) == 0
 
 # --- Per account ----------------------------------------------------------------------------------
 

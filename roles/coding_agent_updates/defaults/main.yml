@@ -1,0 +1,81 @@
+---
+# coding_agent_updates: coding-agent CLIs that follow a vendor release channel on a timer, for the listed
+# accounts, without restarting a running session. The alternative to agent_workstation's pinned CLIs: where
+# this role owns the CLIs, set agent_workstation_coding_cli_mode: external.
+
+# Accounts whose ~/.local/bin links to the CLIs. Required. They must exist (dev_workstation) and hold no sudo
+# rights.
+coding_agent_updates_accounts: []
+
+# CLIs kept current: keys of coding_agent_updates_sources.
+coding_agent_updates_tools: [claude_code, codex, cursor_agent, opencode]
+
+# Release channel: stable | latest.
+#   claude_code   the vendor's signed apt repository of that channel
+#   codex, opencode  the newest full GitHub release on either channel (never a prerelease or draft)
+#   cursor_agent  the version the vendor installer names (the vendor offers one channel)
+coding_agent_updates_channel: stable
+
+# Hours between runs: a divisor of 24. The timer fires at fixed hours (00:00, 04:00, ... for 4), and catches
+# up after downtime.
+coding_agent_updates_interval_hours: 4
+coding_agent_updates_randomized_delay: "0"
+
+# Where each CLI comes from and how it is checked. Keys per kind:
+#   github  repository, asset (release asset name), tag_prefix (stripped from the tag), strip (tar
+#           --strip-components); the release's published sha256 digest is verified
+#   cursor  installer_url (the vendor install script that names the current version), url ({version}
+#           placeholder), strip; the vendor publishes no digest, so HTTPS is the authenticity control
+#   apt     package; the deb is authenticated by the signed metadata of coding_agent_updates_claude_repo_url,
+#           downloaded and extracted, never installed and its maintainer scripts never run
+#   every kind: executable (path inside the unpacked tree), commands (names linked in ~/.local/bin)
+coding_agent_updates_sources:
+  claude_code:
+    kind: apt
+    package: claude-code
+    executable: usr/bin/claude
+    commands: [claude]
+  codex:
+    kind: github
+    repository: openai/codex
+    asset: codex-package-x86_64-unknown-linux-musl.tar.gz
+    tag_prefix: rust-v
+    strip: 0
+    executable: bin/codex
+    commands: [codex]
+  cursor_agent:
+    kind: cursor
+    installer_url: https://cursor.com/install
+    url: https://downloads.cursor.com/lab/{version}/linux/x64/agent-cli-package.tar.gz
+    strip: 1
+    executable: cursor-agent
+    commands: [cursor-agent, agent]
+  opencode:
+    kind: github
+    repository: anomalyco/opencode
+    asset: opencode-linux-x64.tar.gz
+    tag_prefix: v
+    strip: 0
+    executable: opencode
+    commands: [opencode]
+
+# Signed apt repository of the apt-kind CLI. The key is trusted only when its fingerprint matches; the
+# repository is configured for the updater alone (its own source list and package lists), never for the
+# system's apt.
+coding_agent_updates_claude_repo_url: https://downloads.claude.ai/claude-code/apt
+coding_agent_updates_claude_key_url: https://downloads.claude.ai/keys/claude-code.asc
+coding_agent_updates_claude_key_fingerprint: 31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE
+
+# Environment exported by every wrapper before exec: the vendor self-updaters stay off, so the timer is the
+# one update path.
+coding_agent_updates_wrapper_env:
+  DISABLE_AUTOUPDATER: "1"
+  OPENCODE_DISABLE_AUTOUPDATE: "1"
+
+# Paths owned by this role. Versions are kept side by side under the root; running sessions keep theirs.
+coding_agent_updates_root: /opt/coding-agent-updates
+coding_agent_updates_state_dir: /var/lib/coding-agent-updates
+coding_agent_updates_wrapper_dir: /usr/local/lib/coding-agent-updates/bin
+coding_agent_updates_command: /usr/local/libexec/coding-agent-updates
+# Longest run before systemd stops it.
+coding_agent_updates_timeout: 30min

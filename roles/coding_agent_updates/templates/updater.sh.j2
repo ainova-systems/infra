@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Coding-agent CLI updates on the {{ coding_agent_updates_channel }} channel. Every download is authenticated
+# (a GitHub release digest, the vendor's signed apt metadata, or HTTPS alone where the vendor publishes no
+# digest), unpacked and smoke-tested as nobody, and published by switching the tool's current link: running
+# sessions keep their binary. No service restart, no credential and no repository access.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export DEBIAN_FRONTEND=noninteractive
+root={{ coding_agent_updates_root | quote }}
+state={{ coding_agent_updates_state_dir | quote }}
+channel={{ coding_agent_updates_channel | quote }}
+keyring={{ coding_agent_updates__keyring | quote }}
+apt_repo={{ coding_agent_updates_claude_repo_url | quote }}
+
+fetch() {
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --connect-timeout 20 --max-time 300 "$1" -o "$2"
+}
+
+# Smoke-test as nobody (a download never runs as root), then publish beside earlier versions.
+publish() {
+  local tool=$1 version=$2 directory=$3 executable=$4 digest=$5 source=$6 actual final
+  [[ -f $directory/$executable && ! -L $directory/$executable ]] || { echo "$tool: executable missing" >&2; return 1; }
+  install -d -o nobody -g nogroup -m 0700 "$stage/probe-$tool"
+  actual=$(runuser -u nobody -- env -i HOME="$stage/probe-$tool" PATH=/usr/bin:/bin "$directory/$executable" --version)
+  [[ $actual == *"$version"* ]] || { echo "$tool: version check failed" >&2; return 1; }
+  final="$root/$tool-$version"
+  if [[ ! -d $final ]]; then
+    chown -R root:root "$directory"
+    chmod -R go-w "$directory"
+    mv -T "$directory" "$final"
+  fi
+  ln -sfn "$final/$executable" "$root/current/.$tool.new"
+  mv -Tf "$root/current/.$tool.new" "$root/current/$tool"
+  printf '%s\t%s\t%s\t%s\n' "$version" "$digest" "$source" "$(date -u +%FT%TZ)" > "$state/$tool.tsv.new"
+  mv -f "$state/$tool.tsv.new" "$state/$tool.tsv"
+  echo "$tool: selected $version; running sessions keep theirs"
+}
+
+# Unprivileged extraction: an archive cannot overwrite root-owned host files.
+unpack() {
+  local archive=$1 output=$2 strip=${3:-0}
+  install -d -o nobody -g nogroup -m 0755 "$output"
+  runuser -u nobody -- tar --no-same-owner --no-same-permissions --strip-components="$strip" -xzf "$archive" -C "$output"
+}
+
+current() {
+  local tool=$1 version=$2
+  [[ -f $state/$tool.tsv && $(cut -f1 "$state/$tool.tsv") == "$version" && -x $root/current/$tool ]]
+}
+
+github_tool() (
+  set -e
+  local tool=$1 repository=$2 asset=$3 executable=$4 prefix=$5 strip=$6 version url digest
+  fetch "https://api.github.com/repos/$repository/releases/latest" "$stage/$tool.json"
+  version=$(jq -er '.tag_name' "$stage/$tool.json")
+  version=${version#"$prefix"}
+  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  url=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .browser_download_url' "$stage/$tool.json")
+  digest=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .digest' "$stage/$tool.json")
+  [[ $url == "https://github.com/$repository/releases/download/"* && $digest =~ ^sha256:[a-f0-9]{64}$ ]]
+  if current "$tool" "$version"; then echo "$tool: current $version"; exit 0; fi
+  fetch "$url" "$stage/$tool.tar.gz"
+  printf '%s  %s\n' "${digest#sha256:}" "$stage/$tool.tar.gz" | sha256sum --check --status
+  unpack "$stage/$tool.tar.gz" "$stage/$tool" "$strip"
+  publish "$tool" "$version" "$stage/$tool" "$executable" "$digest" "$url"
+)
+
+# The vendor publishes no digest for this download: HTTPS is the authenticity control, the digest of what
+# was fetched is recorded.
+installer_tool() (
+  set -e
+  local tool=$1 installer=$2 template=$3 executable=$4 strip=$5 prefix prefix_re version url digest
+  fetch "$installer" "$stage/$tool-install"
+  prefix=${template%%\{version\}*}
+  prefix_re=$(printf '%s' "$prefix" | sed 's/[][\.*^$/]/\\&/g')
+  version=$(grep -oE "${prefix_re}[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-f0-9]+" "$stage/$tool-install" | head -n 1)
+  version=${version#"$prefix"}
+  [[ $version =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-f0-9]+$ ]]
+  url=${template//\{version\}/$version}
+  [[ $url == https://* ]]
+  if current "$tool" "$version"; then echo "$tool: current $version"; exit 0; fi
+  fetch "$url" "$stage/$tool.tar.gz"
+  digest="sha256:$(sha256sum "$stage/$tool.tar.gz" | cut -d' ' -f1)"
+  unpack "$stage/$tool.tar.gz" "$stage/$tool" "$strip"
+  publish "$tool" "$version" "$stage/$tool" "$executable" "$digest" "$url"
+)
+
+# The signed metadata of the channel's repository authenticates the deb. apt runs with the updater's own
+# source list and package lists, never the system's; the deb is extracted, its maintainer scripts never run.
+apt_tool() (
+  set -e
+  local tool=$1 package=$2 executable=$3 candidate version archive digest
+  local -a apt_options=(
+    -o "Dir::Etc::SourceList=$state/apt/sources.list"
+    -o "Dir::Etc::SourceParts=$state/apt/sources.list.d"
+    -o "Dir::State::Lists=$state/apt/lists"
+    -o "Dir::Cache=$state/apt/cache")
+  install -d -m 0755 "$state/apt" "$state/apt/sources.list.d" "$state/apt/lists" "$state/apt/cache"
+  printf 'deb [signed-by=%s] %s/%s %s main\n' "$keyring" "$apt_repo" "$channel" "$channel" > "$state/apt/sources.list"
+  apt-get "${apt_options[@]}" -qq update
+  candidate=$(apt-cache "${apt_options[@]}" policy "$package" | awk '/Candidate:/ {print $2}')
+  [[ $candidate =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$ ]]
+  version=${candidate%-*}
+  if current "$tool" "$version"; then echo "$tool: current $version"; exit 0; fi
+  mkdir "$stage/$tool-deb"
+  cd "$stage/$tool-deb"
+  apt-get "${apt_options[@]}" -qq download "$package=$candidate"
+  archive=$(find . -maxdepth 1 -name '*.deb' -print)
+  [[ -n $archive && $(printf '%s\n' "$archive" | wc -l) == 1 ]]
+  digest="sha256:$(sha256sum "$archive" | cut -d' ' -f1)"
+  install -d -o nobody -g nogroup -m 0755 "$stage/$tool"
+  runuser -u nobody -- dpkg-deb -x "$archive" "$stage/$tool"
+  publish "$tool" "$version" "$stage/$tool" "$executable" "$digest" "signed-apt:$package=$candidate"
+)
+
+# Sourcing loads the functions only (tests); running updates every enabled CLI.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then return 0; fi
+[[ $(id -u) == 0 ]] || { echo 'Run as root' >&2; exit 1; }
+cd /
+install -d -m 0755 "$root" "$root/current" "$state"
+exec 9>{{ coding_agent_updates__lock | quote }}
+flock -n 9 || { echo 'Another update run holds the lock' >&2; exit 0; }
+stage=$(mktemp -d "$state/stage.XXXXXXXX")
+chmod 0755 "$stage"
+trap 'rm -rf -- "$stage"' EXIT
+date -u +%FT%TZ > "$state/last-attempt"
+failures=0
+# One failed CLI keeps its previous selection and never stops the others.
+set +e
+{% for tool in coding_agent_updates__tools %}
+{% if tool.kind == 'github' %}
+(set -e; github_tool {{ tool.name | quote }} {{ tool.repository | quote }} {{ tool.asset | quote }} {{ tool.executable | quote }} {{ tool.tag_prefix | quote }} {{ tool.strip | int }})
+{% elif tool.kind == 'cursor' %}
+(set -e; installer_tool {{ tool.name | quote }} {{ tool.installer_url | quote }} {{ tool.url | quote }} {{ tool.executable | quote }} {{ tool.strip | int }})
+{% else %}
+(set -e; apt_tool {{ tool.name | quote }} {{ tool.package | quote }} {{ tool.executable | quote }})
+{% endif %}
+[[ $? == 0 ]] || failures=$((failures + 1))
+{% endfor %}
+set -e
+printf '%s\n' "$failures" > "$state/failed-components"
+[[ $failures == 0 ]] || { echo "$failures update(s) failed; previous selections kept" >&2; exit 1; }
+date -u +%FT%TZ > "$state/last-success"

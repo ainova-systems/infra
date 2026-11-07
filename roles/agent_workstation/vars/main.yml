@@ -40,15 +40,52 @@ agent_workstation__commands: >-
 agent_workstation__playwright_dir: "{{ agent_workstation_root }}/playwright-{{ agent_workstation_playwright_version }}"
 agent_workstation__chrome: "{{ agent_workstation_chrome_dir }}/chrome"
 
-# Herdr integration runtime -> the tool that provides its CLI.
+# Herdr integration runtime -> the tool that provides its CLI, and the command Herdr runs.
 agent_workstation__herdr_runtime_tools:
   claude: claude_code
   codex: codex
   cursor: cursor_agent
   opencode: opencode
+agent_workstation__herdr_runtime_commands:
+  claude: claude
+  codex: codex
+  cursor: cursor-agent
+  opencode: opencode
 
-# agent-auth verbs; a scope may not use these names.
-agent_workstation__reserved_scopes: [check, list, remove, help, credential]
+# The coding-agent CLIs; in external mode none of them may be enabled here.
+agent_workstation__coding_tools: [claude_code, codex, cursor_agent, opencode]
+
+# Account entry keys; anything else is rejected.
+agent_workstation__account_keys: [name, credential_scopes, workspace, service_tokens]
+agent_workstation__workspace_pattern: '^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$'
+
+# Workspace per account: its own entry, else its dev_workstation entry when that list is defined.
+agent_workstation__workspace_of: >-
+  {%- set out = {} -%}
+  {%- for account in agent_workstation_accounts if account is mapping -%}
+  {%-   set dev = (dev_workstation_accounts | default([])) | selectattr('name', 'defined')
+                  | selectattr('name', 'equalto', account.name | default('')) | list -%}
+  {%-   set _ = out.update({account.name | default(''):
+          account.workspace | default((dev | first | default({})).workspace | default(''))}) -%}
+  {%- endfor -%}
+  {{ out }}
+# Herdr start directory of the current account (loop_var agent_workstation__account).
+agent_workstation__herdr_workdir: >-
+  {{ agent_workstation__workspace_of[agent_workstation__account.name] | default('', true)
+     or agent_workstation_herdr_working_directory }}
+
+# Service tokens per account: agent_workstation_service_tokens plus the account's own entries.
+agent_workstation__service_tokens_of: >-
+  {%- set out = {} -%}
+  {%- for account in agent_workstation_accounts if account is mapping -%}
+  {%-   set _ = out.update({account.name | default(''): agent_workstation_service_tokens + (account.service_tokens | default([]))}) -%}
+  {%- endfor -%}
+  {{ out }}
+agent_workstation__service_token_keys: [name, env_name]
+agent_workstation__secret_env_pattern: '^[A-Z][A-Z0-9_]*$'
+
+# agent-auth verbs; a scope or service token may not use these names.
+agent_workstation__reserved_scopes: [check, list, remove, help, credential, service]
 
 # Credential scope keys an entry may carry; anything else is rejected. Same contract as dev_workstation.
 agent_workstation__scope_keys: [name, url, kind, username, validate_url]

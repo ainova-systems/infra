@@ -1,0 +1,41 @@
+---
+# Derived values, not inputs: set coding_agent_updates_* variables from defaults/main.yml instead.
+
+coding_agent_updates__unit: coding-agent-updates
+coding_agent_updates__lock: /run/lock/coding-agent-updates.lock
+coding_agent_updates__keyring: /etc/apt/keyrings/coding-agent-updates-claude-code.asc
+coding_agent_updates__key_candidate: "{{ coding_agent_updates_state_dir }}/claude-code.asc.candidate"
+coding_agent_updates__kinds: [github, cursor, apt]
+coding_agent_updates__source_keys:
+  github: [kind, repository, asset, tag_prefix, strip, executable, commands]
+  cursor: [kind, installer_url, url, strip, executable, commands]
+  apt: [kind, package, executable, commands]
+
+# The enabled CLIs with their source settings.
+coding_agent_updates__tools: >-
+  {%- set out = [] -%}
+  {%- for name in coding_agent_updates_tools if name in coding_agent_updates_sources -%}
+  {%-   set _ = out.append(coding_agent_updates_sources[name] | combine({'name': name})) -%}
+  {%- endfor -%}
+  {{ out }}
+coding_agent_updates__uses_apt: "{{ coding_agent_updates__tools | selectattr('kind', 'equalto', 'apt') | list | length > 0 }}"
+
+# One entry per linked command: {command, tool}.
+coding_agent_updates__commands: >-
+  {%- set out = [] -%}
+  {%- for tool in coding_agent_updates__tools -%}
+  {%-   for command in tool.commands | default([]) -%}
+  {%-     set _ = out.append({'command': command, 'tool': tool.name}) -%}
+  {%-   endfor -%}
+  {%- endfor -%}
+  {{ out }}
+
+# Timer schedule: every coding_agent_updates_interval_hours from midnight, at the full hour.
+coding_agent_updates__on_calendar: >-
+  *-*-* {% for hour in range(0, 24, coding_agent_updates_interval_hours | int) %}{{ '%02d' % hour }}{{ ',' if not loop.last else '' }}{% endfor %}:00:00
+
+# Managed files compared byte for byte by the check.
+coding_agent_updates__files:
+  - {src: updater.sh.j2, dest: "{{ coding_agent_updates_command }}", mode: "0755"}
+  - {src: coding-agent-updates.service.j2, dest: "/etc/systemd/system/{{ coding_agent_updates__unit }}.service", mode: "0644"}
+  - {src: coding-agent-updates.timer.j2, dest: "/etc/systemd/system/{{ coding_agent_updates__unit }}.timer", mode: "0644"}

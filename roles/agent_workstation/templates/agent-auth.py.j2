@@ -6,9 +6,12 @@ The token is typed at a hidden prompt, validated where the scope has an endpoint
 ~/.config/git-credentials/<scope>.env (mode 0600) as TOKEN=<token>; the Git credential helper for
 that scope reads it from there and sends it with the scope's username. A github scope is validated
 against the GitHub API; a generic scope (any other forge) is stored without an API call unless it
-declares validate_url. A legacy GH_TOKEN=<token> file of a github scope is still read. Tokens are
-never accepted as arguments, never echoed and never logged. Run inside the coding account, never
-as root.
+declares validate_url. A legacy GH_TOKEN=<token> file of a github scope is still read.
+
+A service token (a service that is not a Git forge) is typed the same way and written to
+~/.config/service-tokens/<name>.env (mode 0600) as <ENV_NAME>=<token>, an environment file a tool or a
+user unit loads; it is never validated. Tokens are never accepted as arguments, never echoed and never
+logged. Run inside the coding account, never as root.
 """
 import getpass
 import json
@@ -24,18 +27,21 @@ import urllib.parse
 import urllib.request
 
 CONFIG = Path({{ (agent_workstation_config_dir ~ '/credential-scopes.json') | to_json }})
+SERVICES = Path({{ (agent_workstation_config_dir ~ '/service-tokens.json') | to_json }})
 STORE = '.config/git-credentials'
+SERVICE_STORE = '.config/service-tokens'
 KEY = 'TOKEN'
 # Written before 0.2.0; accepted for github scopes only, never together with KEY.
 LEGACY_KEY = 'GH_TOKEN'
 SCOPE_KEYS = {'name', 'url', 'kind', 'username', 'validate_url'}
 KINDS = ('github', 'generic')
-VERBS = ('check', 'list', 'remove', 'help')
+VERBS = ('check', 'list', 'remove', 'help', 'service')
 USAGE = """Usage:
   agent-auth [SCOPE]          prompt for a token (hidden), validate it where the scope can be, store it
-  agent-auth check [SCOPE]    check stored credentials (all scopes when SCOPE is omitted)
-  agent-auth list             list configured scopes and whether a credential is stored
-  agent-auth remove SCOPE     delete the stored credential of SCOPE
+  agent-auth service NAME     prompt for the service token NAME (hidden) and store it, unvalidated
+  agent-auth check [NAME]     check stored credentials (every scope and service token when omitted)
+  agent-auth list             list configured scopes and service tokens and whether each is stored
+  agent-auth remove NAME      delete the stored credential of scope or service token NAME
 SCOPE defaults to "default" when configured, or to the only configured scope."""
 
 
@@ -70,6 +76,28 @@ def scopes():
         result[name] = entry
     if not result:
         raise Failure('No credential scopes are configured for this account.')
+    return result
+
+
+def services():
+    """The service tokens configured for this account: name -> {name, env_name}."""
+    account = pwd.getpwuid(os.getuid())
+    try:
+        configured = json.loads(SERVICES.read_text()).get(account.pw_name, [])
+    except OSError:
+        return {}
+    except (ValueError, AttributeError):
+        raise Failure('Invalid service token configuration.') from None
+    result = {}
+    for entry in configured:
+        if not isinstance(entry, dict) or set(entry) != {'name', 'env_name'}:
+            raise Failure('Invalid service token configuration.')
+        name, env_name = entry['name'], entry['env_name']
+        if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]*', name) or name in VERBS:
+            raise Failure('Invalid service token configuration.')
+        if not isinstance(env_name, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]*', env_name):
+            raise Failure('Invalid service token configuration.')
+        result[name] = entry
     return result
 
 
@@ -129,19 +157,47 @@ def read_token(scope, entry):
     return next(iter(values.values()), None)
 
 
-def write_token(scope, token):
-    path = credential_path(scope)
+def write_line(path, line):
+    """Replace path atomically with one line, mode 0600 in a 0700 directory."""
     safe_path(path, secret=True)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     descriptor, temporary = tempfile.mkstemp(prefix='.auth-', dir=path.parent)
     try:
         with os.fdopen(descriptor, 'w') as stream:
-            stream.write(KEY + '=' + token + '\n')
+            stream.write(line + '\n')
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def write_token(scope, token):
+    write_line(credential_path(scope), KEY + '=' + token)
+
+
+def service_path(name):
+    return Path.home() / SERVICE_STORE / (name + '.env')
+
+
+def read_service(name, entry):
+    """The stored service token, or None. Exactly one <ENV_NAME>= line."""
+    path = service_path(name)
+    safe_path(path, secret=True)
+    if not path.exists():
+        return None
+    lines = [line for line in path.read_text().splitlines() if line and not line.startswith('#')]
+    key, sep, value = (lines[0] if len(lines) == 1 else '').partition('=')
+    if len(lines) != 1 or not sep or key != entry['env_name'] or not value:
+        raise Failure('Invalid service token file; remove it and store the token again.')
+    return value
+
+
+def read_secret_input():
+    token = getpass.getpass('Token (hidden): ')
+    if not token or len(token) > 4096 or not re.fullmatch(r'[!-~]+', token):
+        raise Failure('Invalid token input.')
+    return token
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -190,9 +246,7 @@ def login(configured, name):
     entry = configured[scope]
     safe_path(credential_path(scope), secret=True)
     print(f'Scope {scope} ({entry["kind"]}, username {entry["username"]}): {entry["url"]}')
-    token = getpass.getpass('Token (hidden): ')
-    if not token or len(token) > 4096 or not re.fullmatch(r'[!-~]+', token):
-        raise Failure('Invalid token input.')
+    token = read_secret_input()
     accepted = validate(entry, token)
     write_token(scope, token)
     if accepted:
@@ -201,7 +255,40 @@ def login(configured, name):
         print(f'STORED {scope}: no validation endpoint for this scope; confirm with git ls-remote <repository-url>.')
 
 
-def check(configured, name):
+def service_login(tokens, name):
+    if name is None:
+        raise Failure('Name the service token: ' + (', '.join(sorted(tokens)) or 'none is configured'))
+    if name not in tokens:
+        raise Failure('Unknown service token. Configured: ' + (', '.join(sorted(tokens)) or 'none'))
+    if not sys.stdin.isatty():
+        raise Failure('A token is typed at an interactive terminal; it is never piped or passed as an argument.')
+    entry = tokens[name]
+    safe_path(service_path(name), secret=True)
+    print(f'Service token {name} (stored as {entry["env_name"]})')
+    token = read_secret_input()
+    write_line(service_path(name), entry['env_name'] + '=' + token)
+    print(f'STORED {name}: stored with mode 0600 in ~/{SERVICE_STORE}/{name}.env; not validated.')
+
+
+def check_services(tokens, names):
+    failed = False
+    for name in names:
+        try:
+            if read_service(name, tokens[name]) is None:
+                print(f'AUTH_REQUIRED {name}: run agent-auth service {name} inside this account.')
+            else:
+                print(f'PRESENT {name}: service token stored; not validated.')
+        except Failure as error:
+            failed = True
+            print(f'FAIL {name}: {error}', file=sys.stderr)
+    return failed
+
+
+def check(configured, tokens, name):
+    if name is not None and name in tokens:
+        if check_services(tokens, [name]):
+            sys.exit(1)
+        return
     failed = False
     for scope in [select(configured, name)] if name else sorted(configured):
         try:
@@ -214,21 +301,36 @@ def check(configured, name):
         except Failure as error:
             failed = True
             print(f'FAIL {scope}: {error}', file=sys.stderr)
+    if name is None and check_services(tokens, sorted(tokens)):
+        failed = True
     if failed:
         sys.exit(1)
 
 
-def listing(configured):
+def listing(configured, tokens):
     for scope in sorted(configured):
         path = credential_path(scope)
         safe_path(path, secret=True)
         entry = configured[scope]
         print(f'{scope}\t{entry["kind"]}\t{entry["username"]}\t{entry["url"]}\t{"stored" if path.exists() else "missing"}')
+    for name in sorted(tokens):
+        path = service_path(name)
+        safe_path(path, secret=True)
+        print(f'{name}\tservice\t{tokens[name]["env_name"]}\t-\t{"stored" if path.exists() else "missing"}')
 
 
-def remove(configured, name):
+def remove(configured, tokens, name):
     if name is None:
-        raise Failure('Name the scope to remove.')
+        raise Failure('Name the scope or service token to remove.')
+    if name in tokens:
+        path = service_path(name)
+        safe_path(path, secret=True)
+        if path.exists():
+            path.unlink()
+            print(f'REMOVED {name}: revoke the token at the service as well.')
+        else:
+            print(f'ABSENT {name}: nothing stored.')
+        return
     scope = select(configured, name)
     path = credential_path(scope)
     safe_path(path, secret=True)
@@ -247,19 +349,24 @@ def main(argv):
     if len(argv) > 2 or (len(argv) == 2 and argv[0] not in VERBS):
         raise Failure('Tokens and extra arguments are not accepted.\n' + USAGE)
     configured = scopes()
+    tokens = services()
+    if set(configured) & set(tokens):
+        raise Failure('Invalid configuration: a service token shares the name of a credential scope.')
     verb = argv[0] if argv and argv[0] in VERBS else None
     if verb:
         name = argv[1] if len(argv) == 2 else None
     else:
         name = argv[0] if argv else None
-    if verb == 'check':
-        check(configured, name)
+    if verb == 'service':
+        service_login(tokens, name)
+    elif verb == 'check':
+        check(configured, tokens, name)
     elif verb == 'list':
         if name:
             raise Failure(USAGE)
-        listing(configured)
+        listing(configured, tokens)
     elif verb == 'remove':
-        remove(configured, name)
+        remove(configured, tokens, name)
     else:
         login(configured, name)
 

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-07
+
+### Added
+
+- `coding_agent_updates`: coding-agent CLIs on a vendor release channel (`stable` or `latest`), updated on a timer for listed accounts without restarting running sessions.
+- `github_actions_runner_daemon: rootless`: runners in the rootless daemon of `github_actions_runner_account`, with the socket group resolved inside the daemon's namespace and `br_netfilter` persisted.
+- `github_actions_runner`: `adopt: true` replaces an idle foreign container that mounts the instance's volume, so registered runners move over without a new registration.
+- `github_actions_runner`: per-instance `image` and `env`.
+- `github_actions_runner`: CPU and memory limits change in place on a running container; lowering a limit waits for an idle runner.
+- `host_base_hostname`: static hostname and its `/etc/hosts` line, set and checked.
+- `host_base_extra_packages`: further distribution packages, installed and checked.
+- `dev_workstation_accounts`: per-account `home_mode`, `workspace`, `workspace_mode`, `authorized_keys`, `dotnet_tools` and `gh_scope`.
+- `dev_workstation_extra_packages`, `dev_workstation_npm_tools` (exact versions, lifecycle scripts disabled) and the non-secret `dev_workstation_environment`.
+- `dev_workstation_intelligence_update_mode: channel`: the Intelligence CLI follows an npm dist-tag every `dev_workstation_intelligence_update_interval_hours`.
+- `dev_workstation_gh_wrapper`: `gh` authenticates with the account's gh scope token, without a login file or a global token variable.
+- `container_engine_rootless_login_env`: login shells of the rootless accounts export `DOCKER_HOST` and `XDG_RUNTIME_DIR`.
+- `agent_workstation_coding_cli_mode: external`: another role owns the coding-agent CLIs, and Herdr integrations resolve them on the account's `PATH`.
+- `agent_workstation_service_tokens` and `agent-auth service <name>`: hidden-input tokens for services that are not Git forges.
+- `agent_workstation`: Herdr starts in the account's workspace.
+- `container_engine`, `dev_workstation`: another package source naming a repository of the role with a different keyring stops the run, named in the message.
+- `tests/local-probes.yml`: runs the new probes and checks the new derivations and rendered scripts on the control node.
+
+### Changed
+
+- `host_base_ssh_allow_tcp_forwarding` is a boolean, default `false`; `"yes"` and `"no"` still work, and the check reads it from `sshd -T`.
+- `github_actions_runner`: containers carry the label `infra.identity`; a runner created by 0.3.x is recreated once, when idle.
+- `github_actions_runner`: the check also asserts the mounted socket.
+- `agent_workstation`: account entries with unknown keys are refused; `service` is a reserved scope name; `.config/service-tokens` joins the private directories.
+- `dev_workstation`: home modes are `0700` or `0750`; `dev_workstation_dotnet_tools` entries are `{name, version}` only.
+
 ## [0.3.1] - 2026-11-07
 
 ### Fixed

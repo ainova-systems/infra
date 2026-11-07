@@ -11,13 +11,23 @@
     fail_msg: github_actions_runner supports Ubuntu 26.04 and 24.04 on x86_64 with systemd only.
     quiet: true
 
-- name: Assert the registration scope and image pin
+- name: Assert the daemon, registration scope and image pin
   ansible.builtin.assert:
     that:
-      - github_actions_runner_scope_url is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?$')
+      - github_actions_runner_daemon in ['rootful', 'rootless']
+      - github_actions_runner_account is string
       - >-
-        github_actions_runner_image
-        is match('^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?@sha256:[a-f0-9]{64}$')
+        (github_actions_runner_daemon == 'rootful' and github_actions_runner_account == '')
+        or (github_actions_runner_daemon == 'rootless'
+            and github_actions_runner_account is match('^[a-z_][a-z0-9_-]{0,31}$')
+            and github_actions_runner_account != 'root')
+      - >-
+        github_actions_runner_daemon == 'rootful'
+        or github_actions_runner_account in (container_engine_rootless_accounts | default([github_actions_runner_account]))
+      - github_actions_runner_bridge_netfilter is boolean
+      - github_actions_runner_scope_url is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?$')
+      - github_actions_runner_image is string
+      - github_actions_runner_image == '' or github_actions_runner_image is match(github_actions_runner__image_pattern)
       - github_actions_runner_group is string
       - github_actions_runner_common_labels is sequence and github_actions_runner_common_labels is not string
       - >-
@@ -27,25 +37,25 @@
       - github_actions_runner_docker_socket is match('^/[^ ]+$')
       - github_actions_runner_extra_env is mapping
       - >-
-        github_actions_runner_extra_env.keys() | select('match', '^[A-Za-z_][A-Za-z0-9_]*$') | list | length
+        github_actions_runner_extra_env.keys() | select('match', github_actions_runner__env_key_pattern) | list | length
         == github_actions_runner_extra_env | length
-      - github_actions_runner_extra_env.keys() | select('search', '(?i)(token|secret|passw|key|credential)') | list | length == 0
+      - github_actions_runner_extra_env.keys() | select('search', github_actions_runner__secret_key_pattern) | list | length == 0
       - github_actions_runner_identity_env.keys() | sort == ['labels', 'name', 'url']
       - github_actions_runner_identity_env.values() | select('match', '^[A-Z][A-Z0-9_]*$') | list | length == 3
       - github_actions_runner_registration_token_env is match('^[A-Z][A-Z0-9_]*$')
       - github_actions_runner_removal_token_env is match('^[A-Z][A-Z0-9_]*$')
     fail_msg: >-
-      Set github_actions_runner_scope_url (https repository or organization URL) and github_actions_runner_image
-      pinned by @sha256 digest; labels, paths and extra environment must be well formed and non-secret.
+      Set github_actions_runner_daemon rootful (no account) or rootless with github_actions_runner_account (an
+      unprivileged account container_engine runs rootless), github_actions_runner_scope_url (https repository or
+      organization URL) and images pinned by @sha256 digest; labels, paths and extra environment must be well
+      formed and non-secret.
     quiet: true
 
 - name: Assert instance definitions
   ansible.builtin.assert:
     that:
       - github_actions_runner_instance is mapping
-      - >-
-        github_actions_runner_instance.keys()
-        | difference(['name', 'labels', 'cpus', 'memory', 'state', 'volume', 'adopt', 'deregister', 'purge']) | length == 0
+      - github_actions_runner_instance.keys() | difference(github_actions_runner__instance_keys) | length == 0
       - github_actions_runner_instance.name is string
       - github_actions_runner_instance.name is match('^[a-z0-9][a-z0-9-]{0,62}$')
       - github_actions_runner_instance.labels is sequence and github_actions_runner_instance.labels is not string
@@ -58,12 +68,21 @@
       - github_actions_runner__state in ['present', 'stopped', 'absent']
       - github_actions_runner__volume is match('^[a-zA-Z0-9][a-zA-Z0-9_.-]+$')
       - github_actions_runner__adopt is boolean
+      - github_actions_runner__image is string and github_actions_runner__image is match(github_actions_runner__image_pattern)
+      - github_actions_runner_instance.env | default({}) is mapping
+      - >-
+        github_actions_runner_instance.env | default({}) | list | select('match', github_actions_runner__env_key_pattern)
+        | list | length == github_actions_runner_instance.env | default({}) | length
+      - >-
+        github_actions_runner_instance.env | default({}) | list | select('search', github_actions_runner__secret_key_pattern)
+        | list | length == 0
       - github_actions_runner__deregister is boolean
       - github_actions_runner__purge is boolean
       - not github_actions_runner__purge or github_actions_runner__state == 'absent'
     fail_msg: >-
       Instance {{ github_actions_runner_instance.name | default('?') }}: needs name, labels, cpus and memory (MiB);
-      state present|stopped|absent; purge only with state absent; no other keys.
+      state present|stopped|absent; purge only with state absent; an image pinned by digest (its own or
+      github_actions_runner_image); non-secret env; no keys but {{ github_actions_runner__instance_keys | join(', ') }}.
     quiet: true
   loop: "{{ github_actions_runner_instances }}"
   loop_control:
@@ -91,32 +110,81 @@
       plus {{ github_actions_runner_memory_reserve_mb }} MiB reserve for {{ ansible_facts['memtotal_mb'] }} MiB.
     quiet: true
 
+- name: Read the rootless runner account
+  when: github_actions_runner__rootless
+  block:
+    - name: Read the passwd entry of the runner account
+      ansible.builtin.command:
+        argv: [getent, passwd, "{{ github_actions_runner_account }}"]
+      register: github_actions_runner__account_entry
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert the runner account exists and is not root
+      ansible.builtin.assert:
+        that:
+          - github_actions_runner__account_entry.rc == 0
+          - github_actions_runner__account_uid | int != 0
+          - github_actions_runner__account_home is match('^/[^ ]+$')
+        fail_msg: >-
+          Runner account {{ github_actions_runner_account }} is missing or root. Create it and give it a rootless
+          daemon with container_engine first.
+        quiet: true
+
+    - name: Read sudo rights of the runner account
+      ansible.builtin.command:
+        argv: [sudo, -n, -l, -U, "{{ github_actions_runner_account }}"]
+      environment:
+        LC_ALL: C
+      register: github_actions_runner__account_sudo
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    # Some sudo implementations exit 0 on a denied listing; require the denial text.
+    - name: Assert the runner account holds no sudo rights
+      ansible.builtin.assert:
+        that:
+          - >-
+            github_actions_runner__account_sudo.stdout
+            is match('^User ' ~ github_actions_runner_account ~ ' is not allowed to run sudo on .*\.$')
+          - github_actions_runner__account_sudo.stdout_lines | length == 1
+        fail_msg: >-
+          Runner account {{ github_actions_runner_account }} can run sudo; a rootless daemon gives runners the
+          account's authority, so the account stays unprivileged.
+        quiet: true
+
 - name: Read the Docker daemon
   ansible.builtin.command:
-    argv: [docker, info, --format, json]
+    argv: "{{ github_actions_runner__docker + ['info', '--format', 'json'] }}"
   register: github_actions_runner__docker_info
   changed_when: false
+  failed_when: false
   check_mode: false
 
 - name: Read the Compose plugin version
   ansible.builtin.command:
-    argv: [docker, compose, version, --short]
+    argv: "{{ github_actions_runner__docker + ['compose', 'version', '--short'] }}"
   register: github_actions_runner__compose_version
   changed_when: false
+  failed_when: false
   check_mode: false
 
 - name: Read the Docker socket
   ansible.builtin.stat:
-    path: "{{ github_actions_runner_docker_socket }}"
+    path: "{{ github_actions_runner__socket_path }}"
   register: github_actions_runner__socket
 
 - name: Assert a rootful daemon with Compose v2 behind a root-owned socket
   ansible.builtin.assert:
     that:
+      - github_actions_runner__docker_info.rc == 0
       - (github_actions_runner__docker_info.stdout | from_json).ServerVersion is defined
       - >-
         (github_actions_runner__docker_info.stdout | from_json).SecurityOptions | default([])
         | select('search', 'rootless') | list | length == 0
+      - github_actions_runner__compose_version.rc == 0
       - github_actions_runner__compose_version.stdout is version('2.18.0', '>=')
       - github_actions_runner__socket.stat.exists
       - github_actions_runner__socket.stat.issock
@@ -125,3 +193,36 @@
       github_actions_runner needs a running rootful Docker daemon (apply container_engine with mode rootful first),
       Compose >= 2.18 and a root-owned socket at {{ github_actions_runner_docker_socket }}.
     quiet: true
+  when: not github_actions_runner__rootless
+
+- name: Read the rootless daemon behind the account's socket
+  ansible.builtin.command:
+    argv: "{{ github_actions_runner__as_account + ['python3', '-c', github_actions_runner__socket_probe, github_actions_runner__socket_path] }}"
+  register: github_actions_runner__socket_probe_result
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: github_actions_runner__rootless
+
+- name: Assert the account's rootless daemon with Compose v2 behind its own socket
+  ansible.builtin.assert:
+    that:
+      - github_actions_runner__docker_info.rc == 0
+      - (github_actions_runner__docker_info.stdout | from_json).ServerVersion is defined
+      - >-
+        (github_actions_runner__docker_info.stdout | from_json).SecurityOptions | default([])
+        | select('search', 'rootless') | list | length > 0
+      - github_actions_runner__compose_version.rc == 0
+      - github_actions_runner__compose_version.stdout is version('2.18.0', '>=')
+      - github_actions_runner__socket.stat.exists
+      - github_actions_runner__socket.stat.issock
+      - github_actions_runner__socket.stat.uid == github_actions_runner__account_uid | int
+      - github_actions_runner__socket_peer.uid | default(-1) | int == github_actions_runner__account_uid | int
+      - github_actions_runner__namespace_gid | int >= 0
+    fail_msg: >-
+      github_actions_runner_daemon is rootless but {{ github_actions_runner_account }} has no answering rootless
+      daemon with Compose >= 2.18 behind its own socket {{ github_actions_runner__socket_path }}, the daemon
+      listening there is not the account's, or its GID map does not map the socket group. Apply container_engine
+      with the account in container_engine_rootless_accounts first.
+    quiet: true
+  when: github_actions_runner__rootless

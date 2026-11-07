@@ -11,7 +11,7 @@ Supported: Ubuntu 26.04 (default for new hosts) or 24.04 on x86_64 or aarch64 (`
 | Tasks | Effect |
 |---|---|
 | `main` | Installs and configures. Idempotent; asserts inputs, platform, the installed version and every rootless account first. |
-| `check` | Read-only. Package versions and holds, system daemon state and log rotation, per-account socket, unit, rootless security option, Compose, socket isolation and sudo rights, cleanup timers; one assert lists every failed control. |
+| `check` | Read-only. Package versions and holds, system daemon state and log rotation, per-account socket, unit, rootless security option, Compose, socket isolation and sudo rights, cleanup timers, the login snippet and conflicting package sources; one assert lists every failed control. |
 
 ## Variables
 
@@ -33,12 +33,16 @@ Supported: Ubuntu 26.04 (default for new hosts) or 24.04 on x86_64 or aarch64 (`
 | `container_engine_daemon_options` | `{}` | Extra `daemon.json` keys for every daemon. |
 | `container_engine_cleanup_defaults` | see `defaults/main.yml` | Prune policy baseline. |
 | `container_engine_cleanup` | `{}` | Keys overriding the baseline. |
+| `container_engine_rootless_login_env` | `true` | `/etc/profile.d/container-engine-rootless.sh` (root, 0644): login shells of the rootless accounts export `DOCKER_HOST` for their own socket and, when unset, `XDG_RUNTIME_DIR`. `false` removes it. |
 
 ## Safety
 
 - An installed engine at another version fails the run; moving it is an explicit pin change with
   `container_engine_allow_upgrade` for that run, because an upgrade restarts every container.
 - The signing key is downloaded to a candidate file and trusted only when its primary fingerprint matches.
+- Another file in `/etc/apt/sources.list.d` (or `/etc/apt/sources.list`) naming the engine repository with another
+  keyring stops the run before any apt call, naming the file: apt refuses conflicting `Signed-By` values. The role
+  never deletes it.
 - Packages are installed at the exact resolved version and held.
 - Rootless mode masks `docker.service`, `docker.socket` and `containerd.service` before installing, so package
   hooks never start a privileged daemon, and it refuses to stop one that is already active.

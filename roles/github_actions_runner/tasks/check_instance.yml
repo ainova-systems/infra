@@ -17,7 +17,8 @@
     that:
       - github_actions_runner__definition_stat.stat.exists
       - github_actions_runner__definition_stat.stat.uid == 0
-      - github_actions_runner__definition_stat.stat.mode == '0600'
+      - github_actions_runner__definition_stat.stat.gid == github_actions_runner__def_gid | int
+      - github_actions_runner__definition_stat.stat.mode == github_actions_runner__file_mode
       - (github_actions_runner__definition_content.stdout | trim) == (lookup('ansible.builtin.template', 'compose.yml.j2') | trim)
       - github_actions_runner__volume_exists
       - github_actions_runner__registered
@@ -26,26 +27,29 @@
       - github_actions_runner__running
       - github_actions_runner__container.HostConfig.RestartPolicy.Name == 'unless-stopped'
     fail_msg: >-
-      {{ github_actions_runner__name }}: definition missing, private or drifted; volume, stored registration or
-      running container missing. Apply the role (a missing registration needs a registration token).
+      {{ github_actions_runner__name }}: definition missing, not root-owned {{ github_actions_runner__file_mode }} or
+      drifted; volume, stored registration or running container of this role missing. Apply the role (a missing
+      registration needs a registration token).
     quiet: true
   when: github_actions_runner__state == 'present'
 
 - name: Assert the container matches its definition for {{ github_actions_runner__name }}
   ansible.builtin.assert:
     that:
-      - github_actions_runner__container.Config.Image == github_actions_runner_image
+      - github_actions_runner__container.Config.Image == github_actions_runner__image
+      - github_actions_runner__identity_current
       - not github_actions_runner__container.HostConfig.Privileged
       - github_actions_runner__container.HostConfig.NanoCpus == (github_actions_runner_instance.cpus * 1000000000) | int
       - github_actions_runner__container.HostConfig.Memory == github_actions_runner_instance.memory * 1048576
       - github_actions_runner__container.HostConfig.MemorySwap == github_actions_runner__container.HostConfig.Memory
-      - (github_actions_runner__socket.stat.gid | string) in (github_actions_runner__container.HostConfig.GroupAdd | default([], true))
+      - (github_actions_runner__socket_gid | string) in (github_actions_runner__container.HostConfig.GroupAdd | default([], true))
       - >-
-        github_actions_runner__container.Mounts | selectattr('Destination', 'equalto', github_actions_runner_data_path)
-        | selectattr('Name', 'defined') | selectattr('Name', 'equalto', github_actions_runner__volume) | list | length == 1
+        github_actions_runner__container.Mounts | selectattr('Destination', 'equalto', '/var/run/docker.sock')
+        | selectattr('Source', 'equalto', github_actions_runner__socket_path) | list | length == 1
+      - github_actions_runner__holds_volume
     fail_msg: >-
-      {{ github_actions_runner__name }} runs with another image, privilege, limit, socket group or data volume than
-      declared. Apply the role while the runner is idle to recreate it.
+      {{ github_actions_runner__name }} runs with another image, identity, privilege, limit, socket, socket group or
+      data volume than declared. Apply the role (limits change in place; anything else recreates it when idle).
     quiet: true
   when:
     - github_actions_runner__state != 'absent'

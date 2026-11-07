@@ -1,0 +1,49 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Managed by the dev_workstation role.
+# GitHub CLI with the calling account's own token for its gh scope, read from the token file that scope's Git
+# credential helper reads (agent-auth <scope> stores it). The token reaches gh's environment only: nothing is
+# exported to the shell, written to disk or logged, and gh's own login file stays unused. A token already in
+# the environment wins; a missing, linked, shared or malformed file leaves gh unauthenticated.
+set -eu
+real=/usr/bin/gh
+if [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}${GH_ENTERPRISE_TOKEN:-}${GITHUB_ENTERPRISE_TOKEN:-}" ]; then
+  account=$(id -un)
+  scope=
+  host=
+  case $account in
+{% for account, chosen in dev_workstation__gh_scope_of | dictsort %}
+    {{ account }}) scope={{ chosen.name }}; host={{ chosen.host }} ;;
+{% endfor %}
+  esac
+  if [ -n "$scope" ]; then
+    home=$(getent passwd "$account" | cut -d: -f6)
+    file=$home/.config/git-credentials/$scope.env
+    token=
+    if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c %u:%a "$file")" = "$(id -u):600" ]; then
+      current=$(grep -c '^TOKEN=' "$file" || true)
+      legacy=$(grep -c '^GH_TOKEN=' "$file" || true)
+      if [ "$current" = 1 ] && [ "$legacy" = 0 ]; then
+        token=$(sed -n 's/^TOKEN=//p' "$file")
+      elif [ "$current" = 0 ] && [ "$legacy" = 1 ]; then
+        token=$(sed -n 's/^GH_TOKEN=//p' "$file")
+      fi
+      case $token in
+        \"*\") token=${token#\"}; token=${token%\"} ;;
+        \'*\') token=${token#\'}; token=${token%\'} ;;
+      esac
+    fi
+    if [ -n "$token" ]; then
+      if [ "$host" = github.com ]; then
+        GH_TOKEN=$token
+        export GH_TOKEN
+      else
+        GH_ENTERPRISE_TOKEN=$token
+        GH_HOST=$host
+        export GH_ENTERPRISE_TOKEN GH_HOST
+      fi
+    fi
+    unset token
+  fi
+fi
+exec "$real" "$@"

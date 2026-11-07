@@ -47,8 +47,10 @@
       - dev_workstation_home_stat.stat.isdir | default(false)
       - not dev_workstation_home_stat.stat.islnk
       - dev_workstation_home_stat.stat.pw_name == dev_workstation_account.name
-      - dev_workstation_home_stat.stat.mode == dev_workstation_home_mode
-    fail_msg: "Home of {{ dev_workstation_account.name }} is not an owned directory with mode {{ dev_workstation_home_mode }}."
+      - dev_workstation_home_stat.stat.mode == dev_workstation_account.home_mode | default(dev_workstation_home_mode)
+    fail_msg: >-
+      Home of {{ dev_workstation_account.name }} is not an owned directory with mode
+      {{ dev_workstation_account.home_mode | default(dev_workstation_home_mode) }}.
     quiet: true
 
 - name: Check as the account - {{ dev_workstation_account.name }}
@@ -139,6 +141,67 @@
         fail_msg: "Git identity, include or credential routing of {{ dev_workstation_account.name }} differs from the role."
         quiet: true
 
+    - name: Read the workspace of {{ dev_workstation_account.name }}
+      ansible.builtin.stat:
+        path: "{{ dev_workstation_account.workspace }}"
+        follow: false
+        get_checksum: false
+      register: dev_workstation_workspace_stat
+      when: dev_workstation_account.workspace is defined
+
+    - name: Assert the workspace of {{ dev_workstation_account.name }}
+      ansible.builtin.assert:
+        that:
+          - dev_workstation_account.workspace is match((dev_workstation_home | regex_escape) ~ '/')
+          - dev_workstation_workspace_stat.stat.isdir | default(false)
+          - not dev_workstation_workspace_stat.stat.islnk
+          - dev_workstation_workspace_stat.stat.pw_name == dev_workstation_account.name
+          - dev_workstation_workspace_stat.stat.mode == dev_workstation_account.workspace_mode | default('0750')
+        fail_msg: >-
+          Workspace {{ dev_workstation_account.workspace }} of {{ dev_workstation_account.name }} is missing, a link,
+          foreign, outside the home or not mode {{ dev_workstation_account.workspace_mode | default('0750') }}.
+        quiet: true
+      when: dev_workstation_account.workspace is defined
+
+    - name: Check the authorized keys of {{ dev_workstation_account.name }}
+      when: dev_workstation_account.authorized_keys is defined
+      block:
+        - name: Read the SSH paths of {{ dev_workstation_account.name }}
+          ansible.builtin.stat:
+            path: "{{ item }}"
+            follow: false
+            get_checksum: false
+          loop:
+            - "{{ dev_workstation_home }}/.ssh"
+            - "{{ dev_workstation_home }}/.ssh/authorized_keys"
+          register: dev_workstation_ssh_paths
+
+        - name: Read the authorized keys of {{ dev_workstation_account.name }}
+          ansible.builtin.command:
+            argv: [cat, --, "{{ dev_workstation_home }}/.ssh/authorized_keys"]
+            chdir: /
+          register: dev_workstation_ssh_keys
+          changed_when: false
+          failed_when: false
+          check_mode: false
+
+        - name: Assert exactly the declared authorized keys of {{ dev_workstation_account.name }}
+          ansible.builtin.assert:
+            that:
+              - dev_workstation_ssh_paths.results[0].stat.isdir | default(false)
+              - not dev_workstation_ssh_paths.results[0].stat.islnk
+              - dev_workstation_ssh_paths.results[0].stat.mode == '0700'
+              - dev_workstation_ssh_paths.results[1].stat.isreg | default(false)
+              - not dev_workstation_ssh_paths.results[1].stat.islnk
+              - dev_workstation_ssh_paths.results[1].stat.pw_name == dev_workstation_account.name
+              - dev_workstation_ssh_paths.results[1].stat.mode == '0600'
+              - dev_workstation_ssh_keys.rc == 0
+              - dev_workstation_ssh_keys.stdout_lines == dev_workstation_account.authorized_keys
+            fail_msg: >-
+              ~/.ssh (0700) or ~/.ssh/authorized_keys (0600, owned) of {{ dev_workstation_account.name }} is missing,
+              a link, or holds other keys than declared.
+            quiet: true
+
     - name: Read toolchain access of {{ dev_workstation_account.name }}
       ansible.builtin.command:
         argv: "{{ item.argv }}"
@@ -149,6 +212,7 @@
         - {name: tools, argv: ["{{ dev_workstation_dotnet_root }}/dotnet", tool, list, --global]}
         - {name: intelligence, argv: [bash, -lc, command -v intelligence]}
         - {name: intelligence-run, argv: [intelligence, --version]}
+        - {name: gh, argv: [bash, -lc, command -v gh]}
       loop_control:
         label: "{{ item.name }}"
       register: dev_workstation_access
@@ -160,9 +224,10 @@
       vars:
         dev_workstation_a: "{{ dict(dev_workstation_access.results | map(attribute='item.name') | zip(dev_workstation_access.results)) }}"
         dev_workstation_tool_text: "{{ '|' ~ (dev_workstation_a.tools.stdout_lines | map('lower') | map('split') | map('join', ' ') | join(' |')) ~ ' |' }}"
+        dev_workstation_account_tools: "{{ dev_workstation__dotnet_tools_of[dev_workstation_account.name] }}"
         dev_workstation_expected_tools: >-
-          {{ dev_workstation_dotnet_tools | map(attribute='name') | map('lower')
-             | zip(dev_workstation_dotnet_tools | map(attribute='version')) | map('join', ' ')
+          {{ dev_workstation_account_tools | map(attribute='name') | map('lower')
+             | zip(dev_workstation_account_tools | map(attribute='version')) | map('join', ' ')
              | map('regex_replace', '^', '|') | map('regex_replace', '$', ' ') | list }}
       ansible.builtin.assert:
         that:
@@ -172,10 +237,13 @@
           - dev_workstation_expected_tools | reject('in', dev_workstation_tool_text) | list | length == 0
           - dev_workstation_a.intelligence.stdout is match('^/usr/(local/)?bin/intelligence$')
           - dev_workstation_a['intelligence-run'].rc == 0
+          - not dev_workstation_gh_wrapper | bool or dev_workstation_a.gh.stdout == dev_workstation_gh_wrapper_path
         fail_msg: >-
           Toolchain access of {{ dev_workstation_account.name }} is incomplete: dotnet rc {{ dev_workstation_a.dotnet.rc }},
           offline pnpm rc {{ dev_workstation_a.pnpm.rc }}, intelligence resolves to
-          '{{ dev_workstation_a.intelligence.stdout | default('') }}' (an account-owned copy shadows the system one).
+          '{{ dev_workstation_a.intelligence.stdout | default('') }}' (an account-owned copy shadows the system one),
+          gh resolves to '{{ dev_workstation_a.gh.stdout | default('') }}', expected .NET tools
+          {{ dev_workstation_expected_tools | map('trim') | join(', ') }}.
         quiet: true
 
     - name: Stat token files of {{ dev_workstation_account.name }}

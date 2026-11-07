@@ -1,0 +1,58 @@
+---
+# Links of one account (loop_var coding_agent_updates__entry, its passwd lookup). Written as the account,
+# so an account-controlled path never redirects a root write.
+
+- name: Resolve the home of {{ coding_agent_updates__entry.item }}
+  ansible.builtin.set_fact:
+    coding_agent_updates__home: "{{ coding_agent_updates__entry.stdout.split(':')[5] }}"
+
+- name: Read the command paths of {{ coding_agent_updates__entry.item }}
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop: >-
+    {{ [coding_agent_updates__home ~ '/.local', coding_agent_updates__home ~ '/.local/bin']
+       + (coding_agent_updates__commands | map(attribute='command')
+          | map('regex_replace', '^', coding_agent_updates__home ~ '/.local/bin/') | list) }}
+  register: coding_agent_updates__paths
+
+- name: Assert the command paths are safe for {{ coding_agent_updates__entry.item }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        coding_agent_updates__paths.results[:2] | selectattr('stat.exists')
+        | rejectattr('stat.isdir') | list | length == 0
+      - coding_agent_updates__paths.results[:2] | selectattr('stat.exists') | selectattr('stat.islnk') | list | length == 0
+      - >-
+        coding_agent_updates__paths.results[2:] | selectattr('stat.exists')
+        | rejectattr('stat.islnk') | list | length == 0
+    fail_msg: >-
+      ~/.local or ~/.local/bin of {{ coding_agent_updates__entry.item }} is a link or a file, or a command path there
+      holds a file instead of a link; move it away deliberately.
+    quiet: true
+
+- name: Link the CLIs for {{ coding_agent_updates__entry.item }}
+  become: true
+  become_user: "{{ coding_agent_updates__entry.item }}"
+  block:
+    - name: Create the command directory of {{ coding_agent_updates__entry.item }}
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+        follow: false
+      loop:
+        - "{{ coding_agent_updates__home }}/.local"
+        - "{{ coding_agent_updates__home }}/.local/bin"
+
+    - name: Link the wrappers for {{ coding_agent_updates__entry.item }}
+      ansible.builtin.file:
+        src: "{{ coding_agent_updates_wrapper_dir }}/{{ item.command }}"
+        dest: "{{ coding_agent_updates__home }}/.local/bin/{{ item.command }}"
+        state: link
+        force: true
+        follow: false
+      loop: "{{ coding_agent_updates__commands }}"
+      loop_control:
+        label: "{{ item.command }}"

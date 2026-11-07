@@ -1,0 +1,110 @@
+---
+# Shared by main.yml and check.yml: refuse unsupported hosts and malformed input before anything runs.
+
+- name: Assert a supported operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] in ['26.04', '24.04']
+      - ansible_facts['architecture'] == 'x86_64'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: coding_agent_updates supports Ubuntu 26.04 and 24.04 on x86_64 with systemd only.
+    quiet: true
+
+- name: Assert coding_agent_updates inputs
+  ansible.builtin.assert:
+    that:
+      - coding_agent_updates_accounts is sequence and coding_agent_updates_accounts is not string
+      - coding_agent_updates_accounts | length > 0
+      - coding_agent_updates_accounts | reject('match', '^[a-z_][a-z0-9_-]{0,31}$') | list | length == 0
+      - "'root' not in coding_agent_updates_accounts"
+      - coding_agent_updates_accounts | unique | length == coding_agent_updates_accounts | length
+      - coding_agent_updates_tools is sequence and coding_agent_updates_tools is not string
+      - coding_agent_updates_tools | length > 0
+      - coding_agent_updates_tools | unique | length == coding_agent_updates_tools | length
+      - coding_agent_updates_tools | difference(coding_agent_updates_sources.keys() | list) | length == 0
+      - coding_agent_updates_channel in ['stable', 'latest']
+      - coding_agent_updates_interval_hours | int in [1, 2, 3, 4, 6, 8, 12, 24]
+      - coding_agent_updates_randomized_delay | string is match('^[0-9a-z ]+$')
+      - coding_agent_updates_timeout | string is match('^[0-9a-z ]+$')
+      - coding_agent_updates_claude_key_fingerprint is match('^[0-9A-F]{40}$')
+      - coding_agent_updates_claude_key_url is match('^https://[^\s]+$')
+      - coding_agent_updates_claude_repo_url is match('^https://[^\s]+[^/\s]$')
+      - coding_agent_updates_wrapper_env is mapping
+      - coding_agent_updates_wrapper_env | list | reject('match', '^[A-Z][A-Z0-9_]*$') | list | length == 0
+      - >-
+        [coding_agent_updates_root, coding_agent_updates_state_dir, coding_agent_updates_wrapper_dir,
+         coding_agent_updates_command] | reject('match', '^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$') | list | length == 0
+      # agent_workstation installs none of these CLIs when this role owns them.
+      - (agent_workstation_enabled_tools | default([])) | intersect(coding_agent_updates_tools) | length == 0
+    fail_msg: >-
+      coding_agent_updates needs at least one unprivileged account, tools from coding_agent_updates_sources,
+      channel stable|latest, an interval that divides 24, a 40-hex key fingerprint, https sources and absolute
+      paths; agent_workstation must not enable the same CLIs (agent_workstation_coding_cli_mode: external).
+    quiet: true
+
+- name: Assert every enabled source
+  ansible.builtin.assert:
+    that:
+      - item.kind | default('') in coding_agent_updates__kinds
+      - item.keys() | difference(coding_agent_updates__source_keys[item.kind] + ['name']) | length == 0
+      - coding_agent_updates__source_keys[item.kind] | difference(item.keys()) | length == 0
+      - item.name is match('^[a-z0-9_]+$')
+      - item.executable is match('^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$')
+      - item.commands is sequence and item.commands is not string and item.commands | length > 0
+      - item.commands | reject('match', '^[a-z0-9][a-z0-9._-]*$') | list | length == 0
+      - item.kind != 'github' or item.repository is match('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
+      - item.kind != 'github' or item.asset is match('^[A-Za-z0-9_.+-]+$')
+      - item.kind != 'github' or item.tag_prefix is match('^[A-Za-z0-9._-]*$')
+      - item.kind == 'apt' or item.strip | int >= 0
+      - item.kind != 'cursor' or item.installer_url is match('^https://[^\s]+$')
+      - item.kind != 'cursor' or (item.url is match('^https://[^\s]+$') and '{version}' in item.url)
+      - item.kind != 'apt' or item.package is match('^[a-z0-9][a-z0-9+.-]+$')
+    fail_msg: "Source {{ item.name }} is malformed for its kind {{ item.kind | default('?') }}; see defaults/main.yml."
+    quiet: true
+  loop: "{{ coding_agent_updates__tools }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert commands are unique across the enabled CLIs
+  ansible.builtin.assert:
+    that:
+      - coding_agent_updates__commands | map(attribute='command') | unique | length == coding_agent_updates__commands | length
+    fail_msg: Two enabled CLIs link the same command name.
+    quiet: true
+
+- name: Read the passwd entries of the accounts
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ item }}"]
+  loop: "{{ coding_agent_updates_accounts }}"
+  register: coding_agent_updates__passwd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read sudo rights of the accounts
+  ansible.builtin.command:
+    argv: [sudo, -n, -l, -U, "{{ item }}"]
+  loop: "{{ coding_agent_updates_accounts }}"
+  register: coding_agent_updates__sudo
+  environment:
+    LC_ALL: C
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Some sudo implementations exit 0 on a denied listing; require the denial text.
+- name: Assert the accounts exist and are unprivileged
+  ansible.builtin.assert:
+    that:
+      - coding_agent_updates__passwd.results | rejectattr('rc', 'equalto', 0) | list | length == 0
+      - >-
+        coding_agent_updates__passwd.results | map(attribute='stdout') | map('split', ':') | map(attribute=2)
+        | map('int') | select('equalto', 0) | list | length == 0
+      - >-
+        coding_agent_updates__sudo.results | rejectattr('stdout', 'match', '^User \S+ is not allowed to run sudo on .*\.$')
+        | list | length == 0
+    fail_msg: >-
+      Every account in coding_agent_updates_accounts must exist (apply dev_workstation first), not be root and hold
+      no sudo rights.
+    quiet: true

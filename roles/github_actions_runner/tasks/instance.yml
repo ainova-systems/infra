@@ -12,30 +12,21 @@
         path: "{{ github_actions_runner__dir }}"
         state: directory
         owner: root
-        group: root
-        mode: "0700"
+        group: "{{ github_actions_runner__def_gid }}"
+        mode: "{{ github_actions_runner__dir_mode }}"
 
-    - name: Predict a definition change for {{ github_actions_runner__name }}
-      ansible.builtin.template:
-        src: compose.yml.j2
-        dest: "{{ github_actions_runner__definition }}"
-        owner: root
-        group: root
-        mode: "0600"
-      check_mode: true
-      diff: false
-      register: github_actions_runner__pending
-
-    # A changed definition recreates the container and a stop ends the listener: either kills a running job.
+    # Recreating (any change but CPU and memory), replacing an adopted container, stopping, or lowering a
+    # limit can end a running job. Raising a limit in place never does.
     - name: Refuse to disturb a busy runner {{ github_actions_runner__name }}
       ansible.builtin.assert:
         that:
           - >-
             not github_actions_runner__busy
-            or (github_actions_runner__state == 'present' and not github_actions_runner__pending.changed)
+            or (github_actions_runner__state == 'present' and github_actions_runner__identity_current
+                and not github_actions_runner__resources_lowered)
         fail_msg: >-
-          {{ github_actions_runner__name }} is running a job and this change would recreate or stop it.
-          Apply again when the runner is idle.
+          {{ github_actions_runner__name }} is running a job and this change would recreate, replace or stop it, or
+          lower its limits. Apply again when the runner is idle.
         quiet: true
 
     - name: Write the definition of {{ github_actions_runner__name }}
@@ -43,25 +34,46 @@
         src: compose.yml.j2
         dest: "{{ github_actions_runner__definition }}"
         owner: root
-        group: root
-        mode: "0600"
+        group: "{{ github_actions_runner__def_gid }}"
+        mode: "{{ github_actions_runner__file_mode }}"
         validate: docker compose --file %s config --quiet
+
+    - name: Replace the adopted container of {{ github_actions_runner__name }}
+      ansible.builtin.include_tasks: retire_foreign.yml
+      when: github_actions_runner__foreign
 
     - name: Register {{ github_actions_runner__name }}
       ansible.builtin.include_tasks: register.yml
       when: not github_actions_runner__registered
 
+    - name: Change the limits in place for {{ github_actions_runner__name }}
+      ansible.builtin.command:
+        argv: >-
+          {{ github_actions_runner__docker
+             + ['update', '--cpus', github_actions_runner_instance.cpus | string,
+                '--memory', github_actions_runner_instance.memory ~ 'm',
+                '--memory-swap', github_actions_runner_instance.memory ~ 'm', '--', github_actions_runner__name] }}
+      changed_when: true
+      when:
+        - github_actions_runner__identity_current
+        - not github_actions_runner__resources_current
+
+    # A container of the current identity is kept (its limits were reconciled above); any other is recreated.
     - name: Converge the container of {{ github_actions_runner__name }}
       community.docker.docker_compose_v2:
         project_src: "{{ github_actions_runner__dir }}"
         files:
           - compose.yml
+        docker_host: "{{ github_actions_runner__docker_host if github_actions_runner__rootless else omit }}"
         state: "{{ 'present' if github_actions_runner__state == 'present' else 'stopped' }}"
         pull: missing
-        recreate: auto
+        recreate: "{{ 'never' if github_actions_runner__identity_current else 'auto' }}"
         remove_orphans: true
         wait: "{{ github_actions_runner__state == 'present' }}"
         wait_timeout: "{{ github_actions_runner_wait_timeout }}"
+      become: true
+      become_user: "{{ github_actions_runner__module_user }}"
+      environment: "{{ github_actions_runner__module_env }}"
       # In check mode a new definition is not on disk yet, so Compose has nothing to read.
       when: github_actions_runner__definition_stat.stat.exists or not ansible_check_mode
 
@@ -80,8 +92,8 @@
         path: "{{ github_actions_runner__dir }}"
         state: directory
         owner: root
-        group: root
-        mode: "0700"
+        group: "{{ github_actions_runner__def_gid }}"
+        mode: "{{ github_actions_runner__dir_mode }}"
       when:
         - not github_actions_runner__definition_stat.stat.exists
         - github_actions_runner__volume_exists or github_actions_runner__container_exists
@@ -91,20 +103,29 @@
         src: compose.yml.j2
         dest: "{{ github_actions_runner__definition }}"
         owner: root
-        group: root
-        mode: "0600"
+        group: "{{ github_actions_runner__def_gid }}"
+        mode: "{{ github_actions_runner__file_mode }}"
       when:
         - not github_actions_runner__definition_stat.stat.exists
         - github_actions_runner__volume_exists or github_actions_runner__container_exists
+
+    - name: Remove the adopted container of {{ github_actions_runner__name }}
+      ansible.builtin.include_tasks: retire_foreign.yml
+      when: github_actions_runner__foreign
 
     - name: Stop the container of {{ github_actions_runner__name }}
       community.docker.docker_compose_v2:
         project_src: "{{ github_actions_runner__dir }}"
         files:
           - compose.yml
+        docker_host: "{{ github_actions_runner__docker_host if github_actions_runner__rootless else omit }}"
         state: stopped
+      become: true
+      become_user: "{{ github_actions_runner__module_user }}"
+      environment: "{{ github_actions_runner__module_env }}"
       when:
         - github_actions_runner__running
+        - github_actions_runner__managed
         - github_actions_runner__definition_stat.stat.exists or not ansible_check_mode
 
     - name: Deregister {{ github_actions_runner__name }}
@@ -118,10 +139,16 @@
         project_src: "{{ github_actions_runner__dir }}"
         files:
           - compose.yml
+        docker_host: "{{ github_actions_runner__docker_host if github_actions_runner__rootless else omit }}"
         state: absent
         remove_volumes: "{{ github_actions_runner__purge }}"
+      become: true
+      become_user: "{{ github_actions_runner__module_user }}"
+      environment: "{{ github_actions_runner__module_env }}"
       when:
-        - github_actions_runner__container_exists or (github_actions_runner__purge and github_actions_runner__volume_exists)
+        - >-
+          (github_actions_runner__container_exists and github_actions_runner__managed)
+          or (github_actions_runner__purge and github_actions_runner__volume_exists)
         - github_actions_runner__definition_stat.stat.exists or not ansible_check_mode
 
     - name: Remove the definition of purged {{ github_actions_runner__name }}

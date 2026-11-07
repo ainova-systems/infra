@@ -67,6 +67,7 @@
       - container_engine_apt_key_fingerprint is match('^[0-9A-F]{40}$')
       - container_engine__cleanup.keep_label is match('^[^=\s]+=[^\s]+$')
       - container_engine__cleanup.protected_container_labels is sequence
+      - container_engine_rootless_login_env is boolean
     fail_msg: >-
       container_engine needs container_engine_mode rootful|rootless (rootless with at least one account,
       never root), exact X.Y.Z versions, a 40-hex signing-key fingerprint and a key=value keep label.

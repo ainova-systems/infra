@@ -1,5 +1,6 @@
 ---
 # Read-only probe of one instance (loop_var github_actions_runner_instance). Shared by apply and check.
+# Docker commands run as root against the rootful daemon, or as the runner account against its rootless one.
 
 - name: Read the definition of {{ github_actions_runner__name }}
   ansible.builtin.stat:
@@ -8,30 +9,46 @@
 
 - name: Read the data volume of {{ github_actions_runner__name }}
   ansible.builtin.command:
-    argv: [docker, volume, inspect, --, "{{ github_actions_runner__volume }}"]
+    argv: "{{ github_actions_runner__docker + ['volume', 'inspect', '--', github_actions_runner__volume] }}"
   register: github_actions_runner__volume_info
   changed_when: false
   failed_when: github_actions_runner__volume_info.rc != 0 and 'no such volume' not in (github_actions_runner__volume_info.stderr | lower)
   check_mode: false
 
-- name: Read the stored runner configuration of {{ github_actions_runner__name }}
-  ansible.builtin.stat:
-    path: "{{ github_actions_runner__mountpoint }}/.runner"
-    get_checksum: false
-  register: github_actions_runner__runner_file
+- name: Read the stored registration files of {{ github_actions_runner__name }}
   when: github_actions_runner__volume_exists
+  block:
+    - name: Read the stored runner configuration of {{ github_actions_runner__name }}
+      ansible.builtin.stat:
+        path: "{{ github_actions_runner__mountpoint }}/.runner"
+        get_checksum: false
+      register: github_actions_runner__runner_file
+      when: not github_actions_runner__rootless
 
-- name: Read the stored runner credentials of {{ github_actions_runner__name }}
-  ansible.builtin.stat:
-    path: "{{ github_actions_runner__mountpoint }}/.credentials"
-    get_checksum: false
-  register: github_actions_runner__credentials_file
-  when: github_actions_runner__volume_exists
+    - name: Read the stored runner credentials of {{ github_actions_runner__name }}
+      ansible.builtin.stat:
+        path: "{{ github_actions_runner__mountpoint }}/.credentials"
+        get_checksum: false
+      register: github_actions_runner__credentials_file
+      when: not github_actions_runner__rootless
+
+    # A rootless volume lies under the account's home: read it as the account, never follow it as root.
+    # Missing files make stat exit 1; the files it printed are the ones present.
+    - name: Read as the runner account the stored registration files of {{ github_actions_runner__name }}
+      ansible.builtin.command:
+        argv: >-
+          {{ github_actions_runner__as_account + github_actions_runner__volume_files_argv
+             + [github_actions_runner__mountpoint ~ '/.runner', github_actions_runner__mountpoint ~ '/.credentials'] }}
+      register: github_actions_runner__volume_files
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: github_actions_runner__rootless
 
 # .runner holds the registration identity only (name, pool, forge URL); .credentials is never read.
 - name: Read the registration identity of {{ github_actions_runner__name }}
   ansible.builtin.command:
-    argv: [cat, --, "{{ github_actions_runner__mountpoint }}/.runner"]
+    argv: "{{ github_actions_runner__as_account + ['cat', '--', github_actions_runner__mountpoint ~ '/.runner'] }}"
   register: github_actions_runner__runner_identity
   changed_when: false
   check_mode: false
@@ -40,9 +57,7 @@
 - name: Assert no partial registration is stored for {{ github_actions_runner__name }}
   ansible.builtin.assert:
     that:
-      - >-
-        (github_actions_runner__runner_file.stat.exists | default(false))
-        == (github_actions_runner__credentials_file.stat.exists | default(false))
+      - (github_actions_runner__runner_present | bool) == (github_actions_runner__credentials_present | bool)
     fail_msg: >-
       Volume {{ github_actions_runner__volume }} holds a partial registration (.runner without .credentials or the
       reverse). Remove the forge registration, then set state absent with purge: true and apply again.
@@ -63,7 +78,7 @@
 
 - name: Read the container of {{ github_actions_runner__name }}
   ansible.builtin.command:
-    argv: [docker, container, inspect, --, "{{ github_actions_runner__name }}"]
+    argv: "{{ github_actions_runner__docker + ['container', 'inspect', '--', github_actions_runner__name] }}"
   register: github_actions_runner__container_info
   changed_when: false
   failed_when: github_actions_runner__container_info.rc != 0 and 'no such' not in (github_actions_runner__container_info.stderr | lower)
@@ -71,7 +86,7 @@
 
 - name: Read the processes of {{ github_actions_runner__name }}
   ansible.builtin.command:
-    argv: [docker, top, "{{ github_actions_runner__name }}", -eo, "pid,args"]
+    argv: "{{ github_actions_runner__docker + ['top', github_actions_runner__name, '-eo', 'pid,args'] }}"
   register: github_actions_runner__processes
   changed_when: false
   check_mode: false
@@ -80,12 +95,15 @@
 - name: Assert the container name and volume are owned by this role
   ansible.builtin.assert:
     that:
-      - not github_actions_runner__container_exists or github_actions_runner__managed
+      - >-
+        not github_actions_runner__foreign
+        or (github_actions_runner__adopt and github_actions_runner__holds_volume)
       - >-
         github_actions_runner__definition_stat.stat.exists or github_actions_runner__adopt
         or not github_actions_runner__volume_exists
     fail_msg: >-
       {{ github_actions_runner__name }}: a container of that name not created by this role exists, or volume
-      {{ github_actions_runner__volume }} exists without a definition. Remove the foreign container (keep its volume),
-      and set adopt: true on the instance to take an existing volume over deliberately.
+      {{ github_actions_runner__volume }} exists without a definition. Set adopt: true on the instance to take the
+      volume over deliberately; a foreign container is replaced only when it mounts that volume at
+      {{ github_actions_runner_data_path }}, otherwise remove it (keep its volume) first.
     quiet: true

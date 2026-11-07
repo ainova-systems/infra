@@ -12,7 +12,7 @@ Supported: Ubuntu 26.04 (default for new hosts) or 24.04 (`meta/main.yml`, asser
 | Tasks | Effect |
 |---|---|
 | `main` | Applies the baseline. Idempotent; asserts inputs and platform first. |
-| `check` | Read-only. Probes account, keys, sudoers, `sshd -T`, `ufw status`, APT periodic settings, the time daemon and `timedatectl`; one assert lists every failed control. |
+| `check` | Read-only. Probes account, keys, sudoers, `sshd -T` (including TCP forwarding), `ufw status`, APT periodic settings, the time daemon, `timedatectl`, the hostname and its `/etc/hosts` line, and the extra packages (`dpkg-query`); one assert lists every failed control. |
 
 ## Variables
 
@@ -26,14 +26,16 @@ Supported: Ubuntu 26.04 (default for new hosts) or 24.04 (`meta/main.yml`, asser
 | `host_base_ssh_port` | `22` | SSH port, opened in the firewall. |
 | `host_base_ssh_allow_from` | `[any]` | Sources allowed to reach SSH: `any` or addresses/CIDRs; an empty entry stops the run. |
 | `host_base_ssh_extra_users` | `[]` | Accounts besides the admin in `AllowUsers`. |
-| `host_base_ssh_allow_tcp_forwarding` | `"no"` | Passed to `ssh_hardening`. |
+| `host_base_ssh_allow_tcp_forwarding` | `false` | `AllowTcpForwarding`: `false` refuses it, `true` allows it (an editor's remote-SSH extension and `ssh -L` tunnels need it), `local` or `remote` one direction; the check reads `sshd -T`. The strings `"yes"` and `"no"` still work. |
 | `host_base_ssh_allow_agent_forwarding` | `false` | Passed to `ssh_hardening`. |
 | `host_base_firewall_allow` | `[]` | Inbound allows, each `{port, proto: tcp\|udp, from: any\|<CIDR>}`; an empty `from` stops the run. |
 | `host_base_firewall_remove` | `[]` | Allows to delete, same shape. |
 | `host_base_firewall_logging` | `low` | `ufw` logging level. |
+| `host_base_extra_packages` | `[]` | Further distribution packages, by name (a hypervisor guest agent, for example); installed and checked. The version is the signed distribution archive's, kept current by the security updates. |
 | `host_base_auto_updates` | `true` | Security-origin unattended upgrades. |
 | `host_base_auto_reboot` | `false` | Reboot automatically when an update needs it. |
 | `host_base_auto_reboot_time` | `"03:00"` | Reboot time when enabled. |
+| `host_base_hostname` | `""` | Static hostname, also mapped to `127.0.1.1` in `/etc/hosts` (full name, then the short name). Empty leaves both untouched. A provider agent (cloud-init `preserve_hostname`, `manage_etc_hosts`) that rewrites them at boot shows as drift in the check. |
 | `host_base_ntp_servers` | `[]` | Time servers; empty keeps the distribution defaults. `systemd-timesyncd`: they replace the distribution servers. `chrony`: they are added in `/etc/chrony/sources.d/host-base.sources` beside the distribution's NTS pools. |
 | `host_base_allow_control_node` | `false` | Allow applying to the machine running Ansible. |
 | `host_base_supported_os` | Ubuntu 26.04, 24.04 | Platforms the role asserts. |

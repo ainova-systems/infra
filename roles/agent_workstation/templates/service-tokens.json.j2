@@ -1,0 +1,6 @@
+{#- Non-secret: which service tokens each coding account may store with agent-auth, and their variable names. -#}
+{%- set data = {} -%}
+{%- for account in agent_workstation_accounts -%}
+{%-   set _ = data.update({account.name: agent_workstation__service_tokens_of[account.name]}) -%}
+{%- endfor -%}
+{{ data | to_nice_json(indent=2) }}

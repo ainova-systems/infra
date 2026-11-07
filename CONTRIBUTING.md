@@ -21,6 +21,8 @@ Every role must pass one test: **would a second project need the same behaviour 
 - A check reads the host with tools the platform ships, never with a file its own role installs, so it reports real state on a host the role has not applied yet.
 - A block template that can render nothing is `None` on ansible-core 2.19+, not `''`: read every such accumulator through `default('', true)`.
 - A probe command a check runs is exercised by `tests/local-probes.yml` when the control node can run it.
+- A string escape (`'\n'`, `'\t'`) is decoded inside a `{% %}` statement but stays literal in a bare `{{ }}` expression or a condition on ansible-core 2.21: build such a character in a statement (`{%- set newline = '\n' -%}`), never inline in an expression.
+- A `command` whose `argv` carries shell text (`$1`, `$name`) sets `expand_argument_vars: false`; otherwise the module replaces every `$name` that is set in the target's environment before the shell sees it.
 
 ## Workflow
 
