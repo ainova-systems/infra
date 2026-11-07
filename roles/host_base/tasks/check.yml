@@ -4,27 +4,35 @@
 - name: Validate inputs and platform
   ansible.builtin.include_tasks: assert.yml
 
-- name: Read admin account
+- name: Read the admin accounts
   ansible.builtin.command:
-    argv: [getent, passwd, "{{ host_base_admin_user }}"]
+    argv: [getent, passwd, "{{ item.name }}"]
+  loop: "{{ host_base__admins }}"
+  loop_control:
+    label: "{{ item.name }}"
   register: host_base__getent
   changed_when: false
   failed_when: false
   check_mode: false
 
-- name: Read admin authorized keys
+- name: Read the admin accounts' authorized keys
   ansible.builtin.command:
-    argv: [cat, "{{ host_base__getent.stdout.split(':')[5] }}/.ssh/authorized_keys"]
+    argv: [cat, "{{ item.stdout.split(':')[5] }}/.ssh/authorized_keys"]
+  loop: "{{ host_base__getent.results | selectattr('rc', 'equalto', 0) | list }}"
+  loop_control:
+    label: "{{ item.item.name }}"
   register: host_base__keys
   changed_when: false
   failed_when: false
   check_mode: false
-  when: host_base__getent.rc == 0
 
-- name: Read admin sudoers file
-  ansible.builtin.stat:
-    path: "{{ host_base__sudoers_file }}"
+- name: Read the admin sudoers file
+  ansible.builtin.command:
+    argv: [cat, "{{ host_base__sudoers_file }}"]
   register: host_base__sudoers
+  changed_when: false
+  failed_when: false
+  check_mode: false
 
 - name: Read effective sshd configuration
   ansible.builtin.command:
@@ -124,12 +132,35 @@
     that:
       - host_base__failures | length == 0
     fail_msg: "host_base FAILED: {{ host_base__failures | join('; ') }}"
-    success_msg: "host_base OK: admin {{ host_base_admin_user }}, key-only SSH on {{ host_base_ssh_port }}, firewall default deny, updates and time sync"
+    success_msg: >-
+      host_base OK: admin {{ host_base__admin_names | join(', ') }}, key-only SSH on {{ host_base_ssh_port }}, firewall
+      default deny, updates and time sync
   vars:
-    host_base__key_bodies: "{{ host_base_admin_keys | map('split', ' ') | map(attribute=1) | list }}"
-    host_base__present_keys: >-
-      {{ (host_base__keys.stdout | default('')).splitlines() | select('match', '^(ssh-|ecdsa-|sk-)[^ ]+ [^ ]')
-         | map('split', ' ') | map(attribute=1) | list }}
+    # Per admin account: missing account, missing declared key, undeclared key (exclusive), absent from AllowUsers.
+    host_base__admin_failures: >-
+      {%- set out = [] -%}
+      {%- for admin in host_base__admins -%}
+      {%-   set account = host_base__getent.results | selectattr('item.name', 'equalto', admin.name) | first -%}
+      {%-   set listing = host_base__keys.results | default([]) | selectattr('item.item.name', 'equalto', admin.name)
+                          | map(attribute='stdout') | first | default('') -%}
+      {%-   set present = listing.splitlines() | select('match', '^(ssh-|ecdsa-|sk-)[^ ]+ [^ ]') | map('split', ' ')
+                          | map(attribute=1) | list -%}
+      {%-   set declared = admin['keys'] | map('split', ' ') | map(attribute=1) | list -%}
+      {%-   if account.rc != 0 -%}
+      {%-     set _ = out.append('admin account ' ~ admin.name ~ ' missing') -%}
+      {%-   else -%}
+      {%-     if declared | difference(present) | length > 0 -%}
+      {%-       set _ = out.append(admin.name ~ ' authorized_keys lacks a declared key') -%}
+      {%-     endif -%}
+      {%-     if host_base_admin_keys_exclusive | bool and present | difference(declared) | length > 0 -%}
+      {%-       set _ = out.append(admin.name ~ ' authorized_keys holds an undeclared key') -%}
+      {%-     endif -%}
+      {%-   endif -%}
+      {%-   if host_base__sshd.stdout is not search('(?m)^allowusers(\s\S+)*\s' ~ (admin.name | regex_escape) ~ '(\s|$)') -%}
+      {%-     set _ = out.append('sshd AllowUsers lacks ' ~ admin.name) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out }}
     host_base__missing_rules: >-
       {%- for r in host_base__allow_rules -%}
       {%- set source = 'Anywhere' if r.from == 'any' else r.from -%}
@@ -144,12 +175,10 @@
     host_base__ssh_unit_states: "{{ host_base__ssh_enabled.stdout_lines | default([]) | map('trim') | list }}"
     host_base__failures: >-
       {{
-        ([] if host_base__getent.rc == 0 else ['admin account ' ~ host_base_admin_user ~ ' missing'])
-        + ([] if host_base__key_bodies | difference(host_base__present_keys) | length == 0 else ['admin authorized_keys lacks a declared key'])
-        + ([] if not host_base_admin_keys_exclusive | bool or host_base__present_keys | difference(host_base__key_bodies) | length == 0
-           else ['admin authorized_keys holds an undeclared key'])
-        + ([] if (host_base__sudoers.stat.exists | default(false)) == (host_base_admin_sudo_nopasswd | bool)
-           else ['admin sudoers file does not match host_base_admin_sudo_nopasswd'])
+        host_base__admin_failures
+        + ([] if ((host_base__sudoers.rc == 0 and host_base__sudoers.stdout == host_base__sudoers_content | trim)
+                  if host_base_admin_sudo_nopasswd | bool else host_base__sudoers.rc != 0)
+           else ['admin sudoers file does not grant exactly the declared admins'])
         + ([] if host_base__sshd.rc == 0 else ['sshd -T failed'])
         + ([] if host_base__sshd.stdout is search('(?m)^permitrootlogin no$') else ['sshd permits root login'])
         + ([] if host_base__sshd.stdout is search('(?m)^passwordauthentication no$') else ['sshd allows password login'])
@@ -157,8 +186,6 @@
         + ([] if host_base__sshd.stdout is search('(?m)^pubkeyauthentication yes$') else ['sshd public key login disabled'])
         + ([] if host_base__sshd.stdout is search('(?m)^port ' ~ (host_base_ssh_port | string) ~ '$')
            else ['sshd not on port ' ~ (host_base_ssh_port | string)])
-        + ([] if host_base__sshd.stdout is search('(?m)^allowusers(\s\S+)*\s' ~ (host_base_admin_user | regex_escape) ~ '(\s|$)')
-           else ['sshd AllowUsers lacks the admin'])
         + ([] if 'enabled' in host_base__ssh_unit_states else ['sshd does not start at boot: neither ssh.service nor ssh.socket is enabled'])
         + ([] if (host_base__ssh_unit_states[1] | default('')) != 'masked'
               or host_base__ssh_requires.stdout is not search('(^|\s)ssh\.socket(\s|$)')

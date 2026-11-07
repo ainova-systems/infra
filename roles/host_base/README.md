@@ -22,7 +22,8 @@ Supported: Ubuntu 26.04 (default for new hosts) or 24.04 (`meta/main.yml`, asser
 | `host_base_admin_keys` | `[]` (required) | Public keys, `<type> <body>`; a private key fails the assert. |
 | `host_base_admin_keys_exclusive` | `true` | `authorized_keys` holds exactly the declared keys. |
 | `host_base_admin_shell` | `/bin/bash` | Login shell. |
-| `host_base_admin_sudo_nopasswd` | `true` | Passwordless sudo through `/etc/sudoers.d/host-base-admin` (validated with `visudo`). The account has no password. |
+| `host_base_admin_sudo_nopasswd` | `true` | Passwordless sudo for every admin account through `/etc/sudoers.d/host-base-admin` (validated with `visudo`). The role never sets a password. |
+| `host_base_extra_admins` | `[]` | Further admins, one named account per person, never shared: `{name, keys}` (keys default to `host_base_admin_keys`). Each gets the account, its keys, sudo and `AllowUsers`; dropping an entry withdraws sudo and SSH and leaves the account. |
 | `host_base_ssh_port` | `22` | SSH port, opened in the firewall. |
 | `host_base_ssh_allow_from` | `[any]` | Sources allowed to reach SSH: `any` or addresses/CIDRs; an empty entry stops the run. |
 | `host_base_ssh_extra_users` | `[]` | Accounts besides the admin in `AllowUsers`. |
@@ -48,8 +49,11 @@ this role and win.
 
 - Keys are authorized before SSH is hardened, and firewall allows are written before the inbound deny is
   enabled, so a run never locks out its own connection.
-- The first run may connect as the provider's initial account; root login is disabled afterwards, so later
-  runs connect as `host_base_admin_user`.
+- The first run may connect as the provider's initial account or root; root login is disabled afterwards, so
+  later runs connect as a declared admin. A run connecting as any other account is refused: it would take its
+  own sudo and SSH away.
+- To hand the admin role to another account, run once with the new admin declared and the current one in
+  `host_base_extra_admins`, connected as the current one; then run as the new admin without it.
 - The role refuses a local connection or a target whose machine ID equals the control node's: remote-access
   and firewall changes are applied from another machine.
 - `ufw` keeps a rule until it is deleted; retire an allow through `host_base_firewall_remove`, then drop it

@@ -16,7 +16,7 @@ Ansible, CI, or a dev host applying changes to other hosts.
 From the repository root, because the build copies `requirements.yml`:
 
 ```bash
-docker build -f container/Dockerfile -t infra-ansible:0.4.2 .
+docker build -f container/Dockerfile -t infra-ansible:0.4.3 .
 ```
 
 Tag the image with the collection version it was built from. A pin change is a new image.
@@ -32,7 +32,7 @@ docker run --rm -it \
   -v "$SSH_AUTH_SOCK:/ssh-agent" -e SSH_AUTH_SOCK=/ssh-agent \
   -v "$HOME/.ssh/known_hosts:/home/ansible/.ssh/known_hosts:ro" \
   --env-file .env \
-  infra-ansible:0.4.2 check.yml --limit <host>
+  infra-ansible:0.4.3 check.yml --limit <host>
 ```
 
 - Private keys never enter the image or the mount: the agent socket signs.

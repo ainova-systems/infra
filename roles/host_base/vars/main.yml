@@ -1,6 +1,18 @@
 ---
 # Derived values, not inputs: set host_base_* variables from defaults/main.yml instead.
-host_base__ssh_users: "{{ [host_base_admin_user] + host_base_ssh_extra_users }}"
+# Every admin account with its keys: the admin first, then host_base_extra_admins.
+host_base__admins: >-
+  {%- set admins = [{'name': host_base_admin_user, 'keys': host_base_admin_keys}] -%}
+  {%- for admin in host_base_extra_admins -%}
+  {#- admin['keys'] alone would return the dict's keys() method when the item names no keys. -#}
+  {%-   set _ = admins.append({'name': admin.name,
+                               'keys': (admin['keys'] if 'keys' in admin else []) or host_base_admin_keys}) -%}
+  {%- endfor -%}
+  {{ admins }}
+host_base__admin_names: "{{ host_base__admins | map(attribute='name') | list }}"
+host_base__ssh_users: "{{ host_base__admin_names + host_base_ssh_extra_users }}"
+# The sudo grant: one line per admin account.
+host_base__sudoers_content: "{{ host_base__admin_names | map('regex_replace', '$', ' ALL=(ALL:ALL) NOPASSWD: ALL') | join('\n') }}\n"
 host_base__ssh_rules: >-
   {{ host_base_ssh_allow_from
      | map('community.general.dict_kv', 'from')

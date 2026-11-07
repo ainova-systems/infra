@@ -622,3 +622,30 @@
             path: "{{ local_probes_render.path }}"
             state: absent
           when: local_probes_render.path is defined
+
+- name: Derive the admin accounts, their SSH access and the sudo grant
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    host_base_admin_user: alpha
+    host_base_admin_keys: [ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyBodyOnly]
+    host_base_extra_admins:
+      - {name: beta}
+      - {name: gamma, keys: [ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyBodyTwo]}
+    host_base_ssh_extra_users: [coder]
+  tasks:
+    - name: Load host_base's derived values
+      ansible.builtin.include_vars: ../roles/host_base/vars/main.yml
+
+    - name: Assert every admin gets an account, keys, SSH and sudo
+      ansible.builtin.assert:
+        that:
+          - host_base__admin_names == ['alpha', 'beta', 'gamma']
+          - (host_base__admins | selectattr('name', 'equalto', 'beta') | first)['keys'] == host_base_admin_keys
+          - (host_base__admins | selectattr('name', 'equalto', 'gamma') | first)['keys'] | first is search('BodyTwo')
+          - host_base__ssh_users == ['alpha', 'beta', 'gamma', 'coder']
+          - host_base__sudoers_content == local_probes_sudoers
+        fail_msg: "derived {{ host_base__admins }} / {{ host_base__ssh_users }} / {{ host_base__sudoers_content }}"
+      vars:
+        local_probes_sudoers: "alpha ALL=(ALL:ALL) NOPASSWD: ALL\nbeta ALL=(ALL:ALL) NOPASSWD: ALL\ngamma ALL=(ALL:ALL) NOPASSWD: ALL\n"

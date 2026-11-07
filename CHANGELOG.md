@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-07
+
+### Added
+
+- `host_base_extra_admins`: further admin accounts, one per person, each with its keys, passwordless sudo and `AllowUsers`; the check asserts every one and the exact sudo grant.
+- `host_base` refuses a run that connects as an account it does not declare, which would lose its own sudo and SSH.
+
 ## [0.4.2] - 2026-11-07
 
 ### Fixed

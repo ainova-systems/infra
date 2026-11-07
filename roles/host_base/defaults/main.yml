@@ -6,8 +6,13 @@ host_base_admin_keys: []
 # true: authorized_keys holds exactly host_base_admin_keys; a key removed here is removed on the host.
 host_base_admin_keys_exclusive: true
 host_base_admin_shell: /bin/bash
-# Passwordless sudo for the admin account. It has no password: SSH is key-only.
+# Passwordless sudo for the admin accounts. They log in by key only; Ansible never sets a password.
 host_base_admin_sudo_nopasswd: true
+# Further administrators, one named account per person, never a shared one. Each gets what the admin gets: the
+# account, its keys (host_base_admin_keys when it lists none, exclusive as above), sudo and a place in AllowUsers.
+# Dropping an entry withdraws its sudo and SSH; the account itself stays until it is removed deliberately.
+# Each item: {name: <login>, keys: [<public key>, ...]}. A run connects as one of the admins (ansible_user).
+host_base_extra_admins: []
 
 # SSH, applied through devsec.hardening.ssh_hardening. Key-only, no root login.
 host_base_ssh_port: 22

@@ -38,6 +38,12 @@
       - host_base_admin_keys is sequence and host_base_admin_keys is not string
       - host_base_admin_keys | length > 0
       - host_base_admin_keys | reject('match', host_base__key_pattern) | list | length == 0
+      - host_base_extra_admins is sequence and host_base_extra_admins is not string
+      - host_base_extra_admins | rejectattr('name', 'defined') | list | length == 0
+      - host_base__admin_names | reject('match', '^[a-z_][a-z0-9_-]{0,31}$') | list | length == 0
+      - "'root' not in host_base__admin_names"
+      - host_base__admin_names | unique | length == host_base__admin_names | length
+      - host_base__admins | map(attribute='keys') | flatten | reject('match', host_base__key_pattern) | list | length == 0
       - host_base_ssh_port | int > 0 and host_base_ssh_port | int < 65536
       - host_base_ssh_allow_from | length > 0
       # An unset source (an empty environment lookup) must stop the run, never widen a rule.
@@ -57,9 +63,21 @@
       - host_base_extra_packages is sequence and host_base_extra_packages is not string
       - host_base_extra_packages | map('string') | reject('match', host_base__package_pattern) | list | length == 0
     fail_msg: >-
-      host_base needs host_base_admin_user (not root), at least one public key in host_base_admin_keys
+      host_base needs host_base_admin_user (not root), host_base_extra_admins as {name, keys} items with distinct
+      names other than root and the admin, at least one public key in host_base_admin_keys
       (type and body only, never a private key), a valid SSH port, at least one SSH source, and firewall
       items shaped {port, proto: tcp|udp, from: any|<address or CIDR>} (an empty source is refused), and
       host_base_extra_packages as distribution package names without versions, host_base_ssh_allow_tcp_forwarding
       true, false, local or remote, and host_base_hostname empty or a lowercase hostname.
+    quiet: true
+
+# A run connecting as an account the role does not declare would take that account's sudo and SSH away mid-run.
+- name: Assert the run connects as a declared admin or root
+  ansible.builtin.assert:
+    that:
+      - ansible_user | default(host_base_admin_user) in host_base__admin_names + ['root']
+    fail_msg: >-
+      This run connects as {{ ansible_user | default(host_base_admin_user) }}, neither root nor a declared admin
+      ({{ host_base__admin_names | join(', ') }}), so it would lose its own sudo and SSH. Connect as a declared
+      admin, or declare the account in host_base_extra_admins for the run that hands over.
     quiet: true

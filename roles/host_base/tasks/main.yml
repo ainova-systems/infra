@@ -69,21 +69,23 @@
         mode: "0644"
 
 # Account and keys come first: the SSH hardening below removes every other way in.
-- name: Create admin account
+- name: Create admin accounts
   ansible.builtin.user:
-    name: "{{ host_base_admin_user }}"
+    name: "{{ item }}"
     shell: "{{ host_base_admin_shell }}"
     create_home: true
     state: present
+  loop: "{{ host_base__admin_names }}"
 
 # Static, so the tasks keep the role's tags.
 - name: Authorize admin public keys
   ansible.builtin.import_tasks: admin_keys.yml
 
+# One file lists every admin and is written in one step, so an account keeps sudo while it is declared.
 - name: Grant admin passwordless sudo
   ansible.builtin.copy:
     dest: "{{ host_base__sudoers_file }}"
-    content: "{{ host_base_admin_user }} ALL=(ALL:ALL) NOPASSWD: ALL\n"
+    content: "{{ host_base__sudoers_content }}"
     owner: root
     group: root
     mode: "0440"
