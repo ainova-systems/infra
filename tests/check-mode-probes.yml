@@ -1,0 +1,20 @@
+---
+# Runs with --check (scripts/validate.sh): ansible_check_mode follows the command line, not a play keyword.
+- name: Plan the keys of an admin account the run creates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    host_base_admin_user: infra-probe-absent-admin
+    host_base_admin_keys: [ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyBodyOnly]
+  tasks:
+    - name: Run host_base's admin key tasks in check mode for an account that does not exist
+      ansible.builtin.include_role:
+        name: ainova.infra.host_base
+        tasks_from: admin_keys
+
+    - name: Assert the key task was planned, not attempted
+      ansible.builtin.assert:
+        that:
+          - host_base__admin_id.rc != 0
+        fail_msg: "{{ host_base_admin_user }} exists on the control node; the probe needs an absent account"

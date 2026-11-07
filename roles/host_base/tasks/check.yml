@@ -34,6 +34,24 @@
   failed_when: false
   check_mode: false
 
+# Whether sshd comes back after a reboot: one of its units starts at boot, and the service does not require a
+# masked socket (systemd then refuses to start it).
+- name: Read the SSH units' boot state
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, ssh.service, ssh.socket]
+  register: host_base__ssh_enabled
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read the SSH service's requirements
+  ansible.builtin.command:
+    argv: [systemctl, show, ssh.service, --property=Requires, --value]
+  register: host_base__ssh_requires
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
 - name: Read firewall status
   ansible.builtin.command:
     argv: [ufw, status, verbose]
@@ -123,6 +141,7 @@
       {{ host_base__extra_packages.stdout_lines | default([]) | select('match', '^\S+ installed$')
          | map('split', ' ') | map('first') | list }}
     host_base__missing_extra: "{{ host_base_extra_packages | difference(host_base__installed_extra) }}"
+    host_base__ssh_unit_states: "{{ host_base__ssh_enabled.stdout_lines | default([]) | map('trim') | list }}"
     host_base__failures: >-
       {{
         ([] if host_base__getent.rc == 0 else ['admin account ' ~ host_base_admin_user ~ ' missing'])
@@ -140,6 +159,10 @@
            else ['sshd not on port ' ~ (host_base_ssh_port | string)])
         + ([] if host_base__sshd.stdout is search('(?m)^allowusers(\s\S+)*\s' ~ (host_base_admin_user | regex_escape) ~ '(\s|$)')
            else ['sshd AllowUsers lacks the admin'])
+        + ([] if 'enabled' in host_base__ssh_unit_states else ['sshd does not start at boot: neither ssh.service nor ssh.socket is enabled'])
+        + ([] if (host_base__ssh_unit_states[1] | default('')) != 'masked'
+              or host_base__ssh_requires.stdout is not search('(^|\s)ssh\.socket(\s|$)')
+           else ['ssh.service requires the masked ssh.socket: sshd does not start after a reboot'])
         + ([] if host_base__ufw.stdout is search('(?m)^Status: active$') else ['firewall inactive'])
         + ([] if host_base__ufw.stdout is search('Default: deny \(incoming\)') else ['firewall inbound default is not deny'])
         + ([] if (host_base__missing_rules | default('', true)) == ''

@@ -1,0 +1,27 @@
+---
+# The admin's authorized keys. In check mode an account the run creates does not exist yet, and authorized_key
+# cannot resolve its home: the run reports what the apply installs instead of failing the whole --check --diff.
+# The apply always runs the key task, so a missing account still fails there before the SSH hardening.
+- name: Read whether the admin account exists
+  ansible.builtin.command:
+    argv: [id, -u, --, "{{ host_base_admin_user }}"]
+  register: host_base__admin_id
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Report the keys a new admin account receives on the apply
+  ansible.builtin.debug:
+    msg: >-
+      {{ host_base_admin_user }} is created on the apply with {{ host_base_admin_keys | length }} authorized
+      key(s){{ ' (exclusive)' if host_base_admin_keys_exclusive | bool else '' }}.
+  when: ansible_check_mode and host_base__admin_id.rc != 0
+
+- name: Authorize admin public keys
+  ansible.posix.authorized_key:
+    user: "{{ host_base_admin_user }}"
+    key: "{{ host_base_admin_keys | join('\n') }}"
+    exclusive: "{{ host_base_admin_keys_exclusive | bool }}"
+    manage_dir: true
+    state: present
+  when: not ansible_check_mode or host_base__admin_id.rc == 0

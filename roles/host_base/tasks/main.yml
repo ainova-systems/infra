@@ -76,13 +76,9 @@
     create_home: true
     state: present
 
+# Static, so the tasks keep the role's tags.
 - name: Authorize admin public keys
-  ansible.posix.authorized_key:
-    user: "{{ host_base_admin_user }}"
-    key: "{{ host_base_admin_keys | join('\n') }}"
-    exclusive: "{{ host_base_admin_keys_exclusive | bool }}"
-    manage_dir: true
-    state: present
+  ansible.builtin.import_tasks: admin_keys.yml
 
 - name: Grant admin passwordless sudo
   ansible.builtin.copy:
@@ -99,6 +95,30 @@
     path: "{{ host_base__sudoers_file }}"
     state: absent
   when: not host_base_admin_sudo_nopasswd | bool
+
+# devsec.hardening moves sshd off socket activation by masking ssh.socket, then removes the socket's RequiredBy link
+# without a daemon reload. Where that link exists (Ubuntu since 23.04), systemd stops sshd together with the
+# masked socket and refuses to start it again: the host loses SSH. Disabling the socket first (links removed,
+# daemon reloaded) and enabling the service leaves sshd running through that switch and after a reboot.
+- name: Read the socket requirement of the SSH service
+  ansible.builtin.stat:
+    path: /etc/systemd/system/ssh.service.requires/ssh.socket
+    follow: false
+  register: host_base__ssh_socket_requirement
+
+- name: Detach the SSH service from its socket before the hardening masks it
+  when: host_base__ssh_socket_requirement.stat.exists
+  block:
+    - name: Disable the SSH socket and reload systemd
+      ansible.builtin.systemd_service:
+        name: ssh.socket
+        enabled: false
+        daemon_reload: true
+
+    - name: Enable the SSH service at boot
+      ansible.builtin.systemd_service:
+        name: ssh.service
+        enabled: true
 
 - name: Harden SSH to key-only login
   ansible.builtin.include_role:

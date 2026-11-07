@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-07
+
+### Fixed
+
+- `host_base`: on a host where `ssh.socket` is required by `ssh.service` (Ubuntu since 23.04), the SSH hardening no longer stops sshd and leaves it unable to start; the socket is disabled and the service enabled first.
+- `host_base`: `--check --diff` no longer fails on a host whose admin account the run creates; it reports the keys the apply installs.
+
+### Changed
+
+- README: on a host the roles never applied, `--check` stops at the first role that adds a package source; `host_base` is covered completely.
+
+### Added
+
+- `tests/check-mode-probes.yml`: validation runs role tasks under `--check`.
+- `host_base` check: fails when sshd would not start after a reboot (no SSH unit enabled, or the service requires a masked socket).
+
 ## [0.4.1] - 2026-11-07
 
 ### Fixed

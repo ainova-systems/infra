@@ -5,7 +5,8 @@
 # - every conditional (that, when, failed_when, changed_when, until) is a string.
 # - no `latest` versions or image tags and no Ansible Vault payloads in tracked content.
 # - requirements.yml installs, tests/all-roles.yml passes `ansible-playbook --syntax-check`,
-#   tests/local-probes.yml runs the check probes on the control node, and ansible-lint passes.
+#   tests/local-probes.yml runs the check probes on the control node, tests/check-mode-probes.yml runs
+#   role tasks under --check, and ansible-lint passes.
 # Needs ansible-core and ansible-lint (or the control container). Scratch goes to .tmp/validate.
 
 set -euo pipefail
@@ -72,6 +73,9 @@ ansible-playbook --syntax-check -i tests/inventory.yml tests/all-roles.yml
 
 echo "local probes tests/local-probes.yml"
 ANSIBLE_ROLES_PATH="$ROOT/tests/roles" ansible-playbook -i localhost, tests/local-probes.yml >/dev/null
+
+echo "check-mode probes tests/check-mode-probes.yml"
+ansible-playbook -i localhost, --check tests/check-mode-probes.yml >/dev/null
 
 echo "ansible-lint"
 ansible-lint

@@ -50,7 +50,7 @@ The project pins this collection by tag next to the exact versions of its depend
 collections:
   - name: https://github.com/ainova-systems/infra-ansible.git
     type: git
-    version: v0.4.1
+    version: v0.4.2
   - name: devsec.hardening
     version: 11.0.0
   - name: community.docker
@@ -88,7 +88,10 @@ A project's apply playbook maps groups to roles; its check playbook imports each
         name: ainova.infra.host_health
 ```
 
-Every run names its targets with `--limit`; an apply is shown as `--check --diff` first. Staging and production
+Every run names its targets with `--limit`; an apply is shown as `--check --diff` first. On a host the roles never
+applied, the dry run covers `host_base` (admin account, SSH, firewall) completely and stops at the first role that
+adds a package source (`dev_workstation`, `container_engine`): its key and package lists exist only after an
+apply. Once a host has had one apply, the dry run covers every role. Staging and production
 plays use `serial: 1` and `max_fail_percentage: 0`. Remote-access and firewall roles are applied from another
 machine, never to the control node itself; `host_base` refuses that by default.
 
