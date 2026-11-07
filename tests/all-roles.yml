@@ -30,6 +30,11 @@
     - name: Import host_health
       ansible.builtin.import_role:
         name: ainova.infra.host_health
+    - name: Import role_checks
+      ansible.builtin.import_role:
+        name: ainova.infra.role_checks
+      vars:
+        role_checks_roles: [ainova.infra.host_base]
 
 - name: Check every role
   hosts: all
@@ -68,3 +73,9 @@
       ansible.builtin.import_role:
         name: ainova.infra.host_health
         tasks_from: check
+    - name: Check role_checks
+      ansible.builtin.import_role:
+        name: ainova.infra.role_checks
+        tasks_from: check
+      vars:
+        role_checks_roles: [ainova.infra.host_base]

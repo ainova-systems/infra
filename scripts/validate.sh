@@ -4,7 +4,7 @@
 # - tests/all-roles.yml imports every role twice (apply and check) and names no role that is absent.
 # - no `latest` versions or image tags and no Ansible Vault payloads in tracked content.
 # - requirements.yml installs, tests/all-roles.yml passes `ansible-playbook --syntax-check`,
-#   and ansible-lint passes with .ansible-lint.
+#   tests/local-probes.yml runs the check probes on the control node, and ansible-lint passes.
 # Needs ansible-core and ansible-lint (or the control container). Scratch goes to .tmp/validate.
 
 set -euo pipefail
@@ -64,6 +64,9 @@ export ANSIBLE_LOCAL_TEMP="$SCRATCH/ansible-tmp"
 
 echo "syntax-check tests/all-roles.yml"
 ansible-playbook --syntax-check -i tests/inventory.yml tests/all-roles.yml
+
+echo "local probes tests/local-probes.yml"
+ANSIBLE_ROLES_PATH="$ROOT/tests/roles" ansible-playbook -i localhost, tests/local-probes.yml >/dev/null
 
 echo "ansible-lint"
 ansible-lint

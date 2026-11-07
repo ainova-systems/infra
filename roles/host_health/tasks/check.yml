@@ -72,7 +72,7 @@
 
 - name: Read disk usage
   ansible.builtin.command:
-    argv: [df, -P, --output=pcent, "{{ item }}"]
+    argv: "{{ host_health__df_argv + [item] }}"
   loop: "{{ host_health_disk_paths }}"
   register: host_health__df
   changed_when: false

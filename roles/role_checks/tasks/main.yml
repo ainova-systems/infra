@@ -1,0 +1,29 @@
+---
+- name: Assert role_checks inputs
+  ansible.builtin.assert:
+    that:
+      - role_checks_roles is sequence and role_checks_roles is not string
+      - role_checks_roles | length > 0
+      - role_checks_only is sequence and role_checks_only is not string
+    fail_msg: role_checks_roles must be a non-empty list; role_checks_only a list
+    quiet: true
+
+- name: Start with no recorded failures
+  ansible.builtin.set_fact:
+    role_checks__failures: []
+
+- name: Run each role check
+  ansible.builtin.include_tasks: one.yml
+  loop: "{{ role_checks_roles }}"
+  loop_control:
+    loop_var: role_checks__entry
+    label: "{{ role_checks__entry.name | default(role_checks__entry) }}"
+  when: >-
+    role_checks_only | length == 0
+    or (role_checks__entry.name | default(role_checks__entry)) in role_checks_only
+
+- name: Assert every role check passed
+  ansible.builtin.assert:
+    that: role_checks__failures | length == 0
+    fail_msg: "{{ role_checks__failures | length }} failed control(s): {{ role_checks__failures | join(' | ') }}"
+    success_msg: every role check passed

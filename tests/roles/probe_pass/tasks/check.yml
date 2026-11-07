@@ -1,0 +1,5 @@
+---
+- name: Pass the probe check
+  ansible.builtin.assert:
+    that: true
+    quiet: true

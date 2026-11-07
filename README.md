@@ -21,6 +21,7 @@ are documented as tool-neutral knowledge in [intelligence-infra-packs](https://g
 | `compose_host` | Host ready for pipeline-driven Compose stacks: unprivileged deploy account, stack directories, private env-file location | `compose_host_deploy_user`, `compose_host_stack_dirs` |
 | `swarm_node` | Initialize or join a Swarm as manager or worker; cluster ports open to listed peers only | `swarm_node_role`, `swarm_node_peers`, `swarm_node_advertise_addr` |
 | `host_health` | Check-only: uptime, memory, disk, failed units, container engine up, optional backup freshness under an S3-compatible prefix | `host_health_min_free_disk_pct`, `host_health_min_free_mem_pct`, `host_health_backup` |
+| `role_checks` | Runs each listed role's read-only check and reports every failed control in one run | `role_checks_roles`, `role_checks_only` |
 | `dev_workstation` | Per coding account: Git identity, pinned toolchain, forge CLI, Intelligence CLI with update timer, per-scope Git credentials for any HTTPS forge | `dev_workstation_accounts` |
 | `agent_workstation` | Per account: pinned coding-agent CLIs, terminal tools, shared browser for automation, hidden-input credential helper | `agent_workstation_accounts`, `agent_workstation_tools` |
 
@@ -48,7 +49,7 @@ The project pins this collection by tag next to the exact versions of its depend
 collections:
   - name: https://github.com/ainova-systems/infra-ansible.git
     type: git
-    version: v0.2.0
+    version: v0.3.0
   - name: devsec.hardening
     version: 11.0.0
   - name: community.docker

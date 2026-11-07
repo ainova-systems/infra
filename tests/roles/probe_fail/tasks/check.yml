@@ -1,0 +1,4 @@
+---
+- name: Fail the probe check
+  ansible.builtin.fail:
+    msg: probe control failed

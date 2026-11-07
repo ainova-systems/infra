@@ -1,0 +1,46 @@
+---
+# Runs the read-only probe commands the check tasks run, on the control node itself, so a command
+# that cannot work anywhere (a refused option combination) fails validation instead of a host check.
+- name: Run the role probes locally
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../roles/host_health/vars/main.yml
+  tasks:
+    - name: Run the host_health disk probe
+      ansible.builtin.command:
+        argv: "{{ host_health__df_argv + ['/'] }}"
+      register: local_probes_df
+      changed_when: false
+      check_mode: false
+
+    - name: Assert the disk probe prints a percentage
+      ansible.builtin.assert:
+        that:
+          - local_probes_df.stdout_lines | last is regex('^\s*[0-9]+%\s*$')
+        fail_msg: "host_health disk probe printed {{ local_probes_df.stdout_lines | last | default('nothing') }}"
+
+- name: Collect every failed control with role_checks
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run role_checks over two failing checks and one passing check
+      block:
+        - name: Run role_checks
+          ansible.builtin.include_role:
+            name: ainova.infra.role_checks
+          vars:
+            role_checks_roles: [probe_fail, probe_pass, {name: probe_fail, tasks_from: check}]
+        - name: Fail when role_checks passed although checks failed
+          ansible.builtin.fail:
+            msg: role_checks passed with failing checks
+      rescue:
+        - name: Assert role_checks recorded both failures and still ran every check
+          ansible.builtin.assert:
+            that:
+              - role_checks__failures | length == 2
+              - role_checks__failures | select('search', 'probe control failed') | list | length == 2
+              - ansible_failed_task.name == 'Assert every role check passed'
+            fail_msg: "role_checks recorded {{ role_checks__failures | default([]) }}"

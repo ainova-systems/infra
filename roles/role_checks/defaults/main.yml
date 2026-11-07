@@ -1,0 +1,9 @@
+---
+# Roles whose read-only check runs, in order, as fully qualified names (a project's own roles by
+# their plain name). Each entry is a name, or {name, tasks_from} for a role whose check entry point
+# is not `check`. Every failure is recorded and the run continues, so one report lists every
+# failed control; the final assert fails the host when any check failed.
+role_checks_roles: []
+
+# Run only the listed role names (as written in role_checks_roles); empty runs them all.
+role_checks_only: []

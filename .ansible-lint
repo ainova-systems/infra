@@ -8,6 +8,8 @@ exclude_paths:
   - .ansible/
   - .git/
   - container/
+  - tests/roles/
 kinds:
   - yaml: "tests/inventory.yml"
   - playbook: "tests/all-roles.yml"
+  - playbook: "tests/local-probes.yml"

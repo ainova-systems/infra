@@ -1,0 +1,4 @@
+---
+# Internal. The disk probe as data, so tests/local-probes.yml runs the exact argv the check runs.
+# GNU df refuses -P together with --output; --output alone already prints one value per line.
+host_health__df_argv: [df, --output=pcent]

@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: role_checks
+  namespace: ainova
+  author: Ainova Systems
+  description: Runs the read-only check of each listed role and reports every failed control in one run.
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - resolute
+        - noble
+  galaxy_tags:
+    - monitoring
+dependencies: []

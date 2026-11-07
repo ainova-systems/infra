@@ -1,0 +1,15 @@
+---
+# One role's check. A failure is recorded instead of ending the host, so later checks still run.
+- name: Check {{ role_checks__entry.name | default(role_checks__entry) }}
+  block:
+    - name: Run the check of {{ role_checks__entry.name | default(role_checks__entry) }}
+      ansible.builtin.include_role:
+        name: "{{ role_checks__entry.name | default(role_checks__entry) }}"
+        tasks_from: "{{ role_checks__entry.tasks_from | default('check') }}"
+  rescue:
+    - name: Record the failed control of {{ role_checks__entry.name | default(role_checks__entry) }}
+      ansible.builtin.set_fact:
+        role_checks__failures: >-
+          {{ role_checks__failures + [(role_checks__entry.name | default(role_checks__entry)) ~ ' / '
+             ~ (ansible_failed_task.name | default('task')) ~ ': '
+             ~ (ansible_failed_result.msg | default('failed') | string | truncate(400))] }}

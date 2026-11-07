@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-07
+
+### Added
+
+- `role_checks`: runs each listed role's check and reports every failed control in one run instead of stopping at the first.
+- `tests/local-probes.yml`: runs check probe commands on the control node during validation.
+
+### Fixed
+
+- `host_health`: the disk probe no longer combines `df -P` with `--output`, which GNU df refuses, so free disk is read on every host.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added
