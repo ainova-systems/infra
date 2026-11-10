@@ -1,0 +1,58 @@
+name: ci
+
+# The repository's gates, the same commands a contributor runs (scripts/verify.sh): the CLI's typecheck,
+# tests and packed-tarball smoke, the runner's shellcheck, the packs' structure, and the collection's
+# validation with its pinned toolchain.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: cli (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [24, 26]
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:pack
+      - name: Shellcheck the runner
+        run: shellcheck runner/runner.sh
+
+  packs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - run: bash scripts/validate-packs.sh
+
+  collection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the pinned toolchain
+        run: pip install -r collection/requirements.txt -r collection/requirements-lint.txt
+      - run: bash collection/scripts/validate.sh

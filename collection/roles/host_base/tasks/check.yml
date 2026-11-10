@@ -68,6 +68,33 @@
   failed_when: false
   check_mode: false
 
+# Reported, never failed: the firewall drops SSH from a network outside host_base_ssh_allow_from without an
+# answer, so the client only times out. Each source listed is a network the list lacks, or a probe.
+- name: Read the last day of firewall drops
+  ansible.builtin.command:
+    argv: [journalctl, --dmesg, --since=-24h, --output=cat, --no-pager, --grep=UFW BLOCK]
+  register: host_base__drops
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Report SSH the firewall dropped
+  ansible.builtin.debug:
+    msg: >-
+      {%- set port = ' DPT=' ~ (host_base_ssh_port | string) ~ ' ' -%}
+      {%- set counts = {} -%}
+      {%- for line in host_base__drops.stdout_lines | default([]) if port in line and 'SRC=' in line -%}
+      {%-   set source = line.split('SRC=')[1].split(' ')[0] -%}
+      {%-   set _ = counts.update({source: counts.get(source, 0) + 1}) -%}
+      {%- endfor -%}
+      {%- if counts -%}
+      SSH dropped in the last 24 h (ufw logging is rate-limited, so counts are minimums):
+      {%- for source, count in counts | dictsort %} {{ source }} x{{ count }}{% endfor %}.
+      A network that should reach SSH goes into host_base_ssh_allow_from.
+      {%- else -%}
+      No SSH dropped in the last 24 h.
+      {%- endif -%}
+
 - name: Read unattended upgrade settings
   ansible.builtin.command:
     argv: [apt-config, dump, APT::Periodic]

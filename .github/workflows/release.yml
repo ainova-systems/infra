@@ -1,0 +1,97 @@
+name: release
+
+# Publishes @ainova-systems/infra to npm. Publishing a GitHub Release is the only release action; the tag
+# is the version of everything this repository holds - the CLI, the ainova.infra collection and the packs:
+#   vX.Y.Z-rc.N -> npm dist-tag `next` (GitHub prerelease required)
+#   vX.Y.Z      -> npm `latest`
+# The tag's base X.Y.Z must match cli/package.json and collection/galaxy.yml, and its commit must be on main.
+# A version already on npm is not published again, so a re-run, or the first version published by hand,
+# passes.
+#
+# Authenticates through npm trusted publishing (GitHub Actions OIDC, decisions/0005): no npm token is stored
+# or passed. It depends on the trusted publisher configured for the package on npmjs.com - organisation
+# ainova-systems, repository infra, workflow file release.yml, no environment. Renaming this file breaks
+# publishing until that configuration names the new file.
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Trusted publishing needs npm 11.5.1 or later; the runner's Node 24 ships an older npm.
+  NPM_VERSION: 11.21.1
+
+jobs:
+  npm:
+    name: npm ${{ github.event.release.tag_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Install npm
+        run: |
+          set -euo pipefail
+          npm install -g "npm@$NPM_VERSION"
+          npm --version
+
+      - name: Determine version
+        id: ver
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          PACKAGE="$(node -p "require('./package.json').version")"
+          COLLECTION="$(sed -n 's/^version: *//p' ../collection/galaxy.yml)"
+          if [[ "$RELEASE_TAG" =~ ^v([0-9]+[.][0-9]+[.][0-9]+)-rc[.]([1-9][0-9]*)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"; VERSION="$BASE-rc.${BASH_REMATCH[2]}"; CHANNEL=next; EXPECTED_PRERELEASE=true
+          elif [[ "$RELEASE_TAG" =~ ^v([0-9]+[.][0-9]+[.][0-9]+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"; VERSION="$BASE"; CHANNEL=latest; EXPECTED_PRERELEASE=false
+          else
+            echo "release tag must be vX.Y.Z or vX.Y.Z-rc.N (got '$RELEASE_TAG')" >&2; exit 1
+          fi
+          [ "$BASE" = "$PACKAGE" ] || { echo "release base $BASE does not match cli/package.json $PACKAGE" >&2; exit 1; }
+          [ "$BASE" = "$COLLECTION" ] || { echo "release base $BASE does not match collection/galaxy.yml $COLLECTION" >&2; exit 1; }
+          [ "$RELEASE_PRERELEASE" = "$EXPECTED_PRERELEASE" ] || { echo "prerelease=$RELEASE_PRERELEASE does not match '$RELEASE_TAG'" >&2; exit 1; }
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD FETCH_HEAD || { echo "release tag '$RELEASE_TAG' is not on main" >&2; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Set the release version
+        run: npm version --no-git-tag-version --allow-same-version "${{ steps.ver.outputs.version }}"
+      - run: npm run test:pack
+
+      - name: Publish
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          if npm view "@ainova-systems/infra@$VERSION" version >/dev/null 2>&1; then
+            echo "@ainova-systems/infra@$VERSION is already on npm; nothing to publish"
+            exit 0
+          fi
+          npm publish --provenance --access public --tag "${{ steps.ver.outputs.channel }}"

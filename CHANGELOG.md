@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-10
+
+One repository and one version for the CLI, the collection and the packs (decisions 0001-0005). The repository was
+renamed from `infra-ansible`; the packs moved in from `intelligence-infra-packs` with their history.
+
+### Added
+
+- `@ainova-systems/infra`, the `infra` CLI: `infra.yaml` manifest and `infra.lock`; the pinned toolchain from the
+  locked source; generated inventory, `ansible.cfg` and per-host apply and check playbooks with their guards;
+  `check`, `plan`, `apply`, `run`, `trust`, `ssh`, `connect`, `validate`, `status`, `update`, `host add|retire|remove`,
+  `link`, `render`; a runner for Linux and WSL; npm release through trusted publishing.
+- `host_base` check: reports the sources the firewall dropped SSH from in the last 24 hours, so a network missing
+  from `host_base_ssh_allow_from` shows by name instead of as a client timeout.
+- Packs: the `infra` engine reference (`infra-host-install` `references/engines/infra.md`); `host_engine: infra`.
+
+### Changed
+
+- The collection lives in `collection/`, with its Python toolchain pinned in `collection/requirements.txt` and
+  `requirements-lint.txt`, which the control container installs. Consumers install it from
+  `git+https://github.com/ainova-systems/infra.git#/collection,vX.Y.Z`, or through the CLI.
+
+### Removed
+
+- Packs: the Ansible engine reference (`references/engines/ansible.md`); projects run the CLI instead of a wrapper.
+
 ## [0.4.4] - 2026-11-07
 
 ### Fixed
@@ -131,3 +156,36 @@ First release: the `ainova.infra` collection.
 - Role contract: `main` applies, `check` only reads; inputs asserted first; versions pinned; secrets `no_log`.
 - Control container with pinned ansible-core 2.21.6, ansible-lint 26.11.0 and the `requirements.yml` collections.
 - `scripts/validate.sh`: role layout, `latest` and Vault scans, syntax check of `tests/all-roles.yml`, ansible-lint.
+
+## Packs history (`intelligence-infra-packs`)
+
+The packs were versioned in their own repository until 0.5.0.
+
+### [0.2.1] - 2026-11-07
+
+### Added
+
+- Ansible engine reference: how a skill runs the wrapper end to end with no command typed by the owner.
+- Profile key `host_trust`: records a new host's SSH key after an out-of-band fingerprint check.
+
+### [0.2.0] - 2026-11-06
+
+### Added
+
+- `@ainova-systems/infra-host`: profile key `host_engine` (`ansible` or `none`), read by `infra-host-check`, `infra-host-install`, `infra-host-upgrade` and `infra-host-refresh`.
+- `@ainova-systems/infra-host`: Ansible engine reference in `infra-host-install` `references/engines/ansible.md`: always limited, check-and-diff before apply, tags for partial runs, serial rollout for staging and production, pinned versions, run-time secrets with `no_log`, read-only check play, no remote-access changes to the control node.
+
+### [0.1.0] - 2026-11-06
+
+First release: six layer packs.
+
+### Added
+
+- `@ainova-systems/infra-core`: the `infra-discipline` rule, `infra-init` (profile and generated environments rule), `infra-audit`, and the profile and environments templates.
+- `@ainova-systems/infra-host`: `infra-host-create`, `infra-host-check`, `infra-host-install`, `infra-host-refresh`, `infra-host-upgrade`, with a provider-neutral host control contract.
+- `@ainova-systems/infra-platform`: `infra-runner-change`.
+- `@ainova-systems/infra-stack`: `infra-stack-check` and `infra-stack-deploy`, with Compose, Swarm and k3s runtime references selected per environment class.
+- `@ainova-systems/infra-release`: `infra-release-promote` and `infra-preview`.
+- `@ainova-systems/infra-operator`: `infra-operator-slot` and `infra-operator-check`.
+- Registry `index.yaml`, `scripts/validate-pack.sh` and its CI workflow.
+- `docs/design.md` accepted, with the draft's open questions resolved.

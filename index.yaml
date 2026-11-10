@@ -1,0 +1,37 @@
+# Registry index for this repository.
+#
+# This repo holds several Intelligence Packages, so the package names are not
+# repository names. The Intelligence CLI reads this file from the repository
+# root to map them to their sources:
+#
+#   intelligence registry add https://github.com/ainova-systems/infra.git
+#   intelligence package add @ainova-systems/infra-core
+#
+# Versions live in this repository's git tags (vX.Y.Z), shared by every pack;
+# a project's range resolves against them and pins the tag and commit in its
+# intelligence.lock.
+packages:
+  "@ainova-systems/infra-core":
+    url: "https://github.com/ainova-systems/infra.git"
+    path: "packs/infra-core"
+    description: "Cross-cutting infrastructure discipline: desired vs observed state, environment classes, secret placement, decision records, and the init and audit skills every other infra pack builds on."
+  "@ainova-systems/infra-host":
+    url: "https://github.com/ainova-systems/infra.git"
+    path: "packs/infra-host"
+    description: "Host lifecycle on any provider: create, check, install, refresh and upgrade one host from its manifest, with a provider-neutral host control contract. Depends on infra-core."
+  "@ainova-systems/infra-platform":
+    url: "https://github.com/ainova-systems/infra.git"
+    path: "packs/infra-platform"
+    description: "Platform layer: container engine and self-hosted CI runners with labels mapped to environment classes, limits, safe resize and cleanup. Depends on infra-core."
+  "@ainova-systems/infra-stack":
+    url: "https://github.com/ainova-systems/infra.git"
+    path: "packs/infra-stack"
+    description: "Application stack contract per environment class - deploy, check, rollback, health, secrets by reference - with Compose, Swarm and k3s runtime rules. Depends on infra-core."
+  "@ainova-systems/infra-release":
+    url: "https://github.com/ainova-systems/infra.git"
+    path: "packs/infra-release"
+    description: "Promotion between environment classes behind gates, and the per-change preview lifecycle with capacity and TTL. Depends on infra-core; pairs with infra-stack."
+  "@ainova-systems/infra-operator":
+    url: "https://github.com/ainova-systems/infra.git"
+    path: "packs/infra-operator"
+    description: "Agent-runtime hosting: slot classes as trust boundaries, accounts and credentials per class, an isolated release slot, and a shared resource budget. Depends on infra-core; complements the dev packs' operator pack."
