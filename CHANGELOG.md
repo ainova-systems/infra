@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `infra setup`: links the project and keeps the operator's `dev` shortcut for `infra connect` in both PowerShell
+  profiles, replacing the per-repository installers' blocks.
+
 ## [0.5.0] - 2026-11-10
 
 One repository and one version for the CLI, the collection and the packs (decisions 0001-0005). The repository was

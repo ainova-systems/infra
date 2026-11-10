@@ -84,6 +84,7 @@ the variables, never per operator.
 | `infra ssh <host> [-- <command>]` | the admin account |
 | `infra connect <target> [connect\|shell\|files\|git\|agents\|repos\|updates\|check\|web <port>\|code]` | the coding account of a dev host; `web` tunnels a loopback port, `code` opens VS Code Remote SSH (direct targets) |
 | `infra link`, `infra unlink [<project>]` | makes the project's targets work from any directory |
+| `infra setup` | links the project and keeps a marked `dev` function (`dev <target>` is `infra connect <target>`) in both PowerShell profiles on Windows; replaces the per-repository installers' blocks, never an unmanaged `dev` |
 | `infra host add <id> --class <c> [--provider <p>] [--role <r>]...` | declares a planned host: manifest entry, `host_vars/<id>.yml`, its address name in the example |
 | `infra host retire <id>`, `infra host remove <id>` | keeps the record of a host that no longer runs; removes one never built or retired |
 | `infra render <host> --out <dir>` | writes the generated files for inspection |

@@ -13,6 +13,7 @@ import { DEFAULT_SOURCE, findHost, loadProject, MANIFEST, type Host, type Projec
 import { findTarget, link, readRegistry, unlink } from './registry.ts';
 import { linuxPath, runRunner } from './runner.ts';
 import { hostSecrets, runnerTokens } from './secrets.ts';
+import { installShortcut } from './shortcut.ts';
 import { InfraError, isWindows, note, warn } from './util.ts';
 import { projectPlaybooks, validateProject } from './validate.ts';
 
@@ -41,6 +42,7 @@ Hosts (one host per run)
 Operator
   infra connect <target> [${ACTIONS.join('|')}] [<port>] [--local-port <n>]
   infra link | infra unlink [<project>]   make this project's targets reachable from any directory
+  infra setup                         link this project and install the dev shortcut (dev <target> = infra connect)
 
 Arguments after -- go to ansible-playbook (never --limit or --inventory).
 Environment: INFRA_SOURCE_DIR runs a local checkout of the source instead of the lock (development).`;
@@ -456,6 +458,18 @@ async function main(argv: string[]): Promise<number> {
       const project = loadProject();
       link(project);
       note(`linked ${project.manifest.project}: its targets (${project.manifest.connect.map((t) => t.name).join(', ') || 'none'}) work from any directory`);
+      return 0;
+    }
+    case 'setup': {
+      only(parsed, []);
+      positionals(parsed, 0, 0, 'infra setup');
+      const project = loadProject();
+      link(project);
+      const changed = installShortcut();
+      const targets = project.manifest.connect.map((t) => t.name);
+      note(`linked ${project.manifest.project}${targets.length > 0 ? ` (targets: ${targets.join(', ')})` : ''}`);
+      if (isWindows) note(changed.length > 0 ? `dev shortcut written to ${changed.join(' and ')}; open a new terminal` : 'dev shortcut is current');
+      else note("add the shortcut to your shell: alias dev='infra connect'");
       return 0;
     }
     case 'unlink': {
