@@ -35,7 +35,8 @@ hosts:
     provider: hetzner
     status: active                 # planned, active or retired
     groups: [backups]              # further inventory groups, for group_vars
-    secrets: [BACKUP_S3_SECRET]    # typed without echo at every run, or taken from the environment
+    secrets:                       # typed without echo, or taken from the environment; every run by default
+      - { name: BACKUP_S3_SECRET, runs: [check] }  # check, plan, apply, run
     observed: docs/hosts/shop-staging-01.md   # default <ansible>/observed/<id>.md
   shop-dev-01:
     class: dev

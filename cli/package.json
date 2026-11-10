@@ -1,6 +1,6 @@
 {
   "name": "@ainova-systems/infra",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "One CLI for every host a project owns: a project manifest and lock, the pinned Ansible toolchain, generated inventory and playbooks, conformance checks, apply and check runs, and operator connections.",
   "keywords": [
     "infrastructure",

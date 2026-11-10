@@ -21,6 +21,15 @@ export interface Hook {
   tags: string[];
 }
 
+/** A run-time secret of a host: typed without echo, or taken from the environment, for the runs it names. */
+export interface Secret {
+  name: string;
+  runs: RunKind[];
+}
+
+export const RUN_KINDS = ['check', 'plan', 'apply', 'run'] as const;
+export type RunKind = (typeof RUN_KINDS)[number];
+
 export interface Host {
   id: string;
   class: HostClass;
@@ -30,7 +39,7 @@ export interface Host {
   groups: string[];
   before: Hook[];
   after: Hook[];
-  secrets: string[];
+  secrets: Secret[];
   /** Observed-state file, relative to the project root. */
   observed: string;
 }
@@ -113,6 +122,33 @@ class Reader {
     }
     return value as T;
   }
+}
+
+function readSecrets(reader: Reader, where: string, value: unknown): Secret[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    reader.fail(where, 'must be a list');
+    return [];
+  }
+  const secrets: Secret[] = [];
+  value.forEach((item, index) => {
+    const at = `${where}[${index}]`;
+    if (typeof item === 'string') {
+      const name = reader.string(at, item, ENV_VALUE);
+      if (name) secrets.push({ name, runs: [...RUN_KINDS] });
+      return;
+    }
+    if (!isRecord(item)) {
+      reader.fail(at, 'must be a name or a mapping {name, runs}');
+      return;
+    }
+    reader.keys(at, item, ['name', 'runs']);
+    const name = reader.string(`${at}.name`, item.name, ENV_VALUE);
+    const runs = item.runs === undefined ? [...RUN_KINDS] : reader.strings(`${at}.runs`, item.runs, new RegExp(`^(?:${RUN_KINDS.join('|')})$`));
+    if (name) secrets.push({ name, runs: runs as RunKind[] });
+  });
+  if (new Set(secrets.map((secret) => secret.name)).size !== secrets.length) reader.fail(where, 'lists a secret twice');
+  return secrets;
 }
 
 function readHooks(reader: Reader, where: string, value: unknown): Hook[] {
@@ -231,7 +267,7 @@ export function parseManifest(raw: unknown, where = MANIFEST): Manifest {
           groups,
           before: readHooks(reader, `${at}.before`, spec.before),
           after: readHooks(reader, `${at}.after`, spec.after),
-          secrets: reader.strings(`${at}.secrets`, spec.secrets, ENV_VALUE),
+          secrets: readSecrets(reader, `${at}.secrets`, spec.secrets),
           observed,
         });
       }

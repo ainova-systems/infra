@@ -14,7 +14,10 @@ test('reads a manifest with class defaults, groups, hooks, secrets and targets',
   const staging = manifest.hosts.find((host) => host.id === 'demo-staging-01')!;
   assert.deepEqual(staging.roles, ['host_base', 'container_engine', 'compose_host']);
   assert.deepEqual(staging.groups, ['backups']);
-  assert.deepEqual(staging.secrets, ['DEMO_BACKUP_KEY']);
+  assert.deepEqual(staging.secrets, [
+    { name: 'DEMO_TOKEN', runs: ['check', 'plan', 'apply', 'run'] },
+    { name: 'DEMO_BACKUP_KEY', runs: ['check'] },
+  ]);
   assert.equal(staging.observed, 'ansible/observed/demo-staging-01.md');
   const dev = manifest.hosts.find((host) => host.id === 'demo-dev-01')!;
   assert.deepEqual(dev.before[0], { role: 'local_gateway', tasksFrom: 'preflight', tags: ['always'] });

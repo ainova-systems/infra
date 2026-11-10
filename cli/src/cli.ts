@@ -169,7 +169,7 @@ async function playbookRun(kind: 'check' | 'plan' | 'apply', parsed: Parsed): Pr
     }
   }
 
-  const secrets = await hostSecrets(host);
+  const secrets = await hostSecrets(host, kind);
   const runsRunner = host.roles.some((role) => role.split('.').at(-1) === 'github_actions_runner');
   if (kind === 'apply' && runsRunner && (roles.length === 0 || roles.includes('github_actions_runner'))) Object.assign(secrets, runnerTokens(project));
   if (runsRunner && !process.stdin.isTTY) runVars.github_actions_runner_token_prompt = false;
@@ -210,7 +210,7 @@ async function runProjectPlaybook(parsed: Parsed): Promise<number> {
   if (host.status === 'retired') throw new InfraError(`${host.id} is retired`);
   const env = loadEnv(project);
   const lock = runnableLock(project);
-  const secrets = await hostSecrets(host);
+  const secrets = await hostSecrets(host, 'run');
   const result = await runRunner({
     mode: 'playbook',
     ...(lock ? { lock } : {}),

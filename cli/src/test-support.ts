@@ -31,7 +31,7 @@ hosts:
     class: staging
     status: planned
     groups: [backups]
-    secrets: [DEMO_BACKUP_KEY]
+    secrets: [DEMO_TOKEN, { name: DEMO_BACKUP_KEY, runs: [check] }]
 connect:
   demo1: { host: demo-dev-01, account: coder, direct: true }
   demo2: { host: demo-dev-01, account: other }

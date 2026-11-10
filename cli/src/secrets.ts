@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import type { Host, Project } from './manifest.ts';
+import type { Host, Project, RunKind } from './manifest.ts';
 import { InfraError, note } from './util.ts';
 
 /** Reads one line from the terminal without echoing it. */
@@ -32,10 +32,10 @@ export function promptHidden(label: string): Promise<string> {
   });
 }
 
-/** The host's declared run-time secrets: taken from the environment, else typed without echo. Never printed. */
-export async function hostSecrets(host: Host): Promise<Record<string, string>> {
+/** The host's declared run-time secrets for this run: from the environment, else typed without echo. Never printed. */
+export async function hostSecrets(host: Host, kind: RunKind): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
-  for (const name of host.secrets) {
+  for (const { name } of host.secrets.filter((secret) => secret.runs.includes(kind))) {
     const value = process.env[name] || (await promptHidden(name));
     if (!value) throw new InfraError(`${name} is empty`);
     out[name] = value;

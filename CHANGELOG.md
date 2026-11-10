@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-10
+
 ### Added
 
 - `infra setup`: links the project and keeps the operator's `dev` shortcut for `infra connect` in both PowerShell
   profiles, replacing the per-repository installers' blocks.
+- Host secrets name the runs that need them (`{ name, runs: [check] }`); a plain name still means every run.
 
 ## [0.5.0] - 2026-11-10
 
