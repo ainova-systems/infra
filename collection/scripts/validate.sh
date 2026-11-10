@@ -19,7 +19,7 @@ errors=0
 fail() { echo "FAIL: $1" >&2; errors=$((errors + 1)); }
 
 for tool in ansible-playbook ansible-galaxy ansible-lint; do
-    command -v "$tool" >/dev/null || { echo "FAIL: $tool not found; run inside the control container (container/README.md)" >&2; exit 1; }
+    command -v "$tool" >/dev/null || { echo "FAIL: $tool not found; run inside the control container (../container/README.md)" >&2; exit 1; }
 done
 
 cd "$ROOT"
@@ -44,7 +44,7 @@ while read -r listed; do
     [ -d "roles/$listed" ] || fail "tests/all-roles.yml imports '$listed', which has no roles/$listed"
 done < <(grep -oE 'ainova\.infra\.[a-z0-9_]+' tests/all-roles.yml | sed 's/^ainova\.infra\.//' | sort -u)
 
-if grep -rnE 'state:[[:space:]]*latest|version:[[:space:]]*["'\'']?latest|:latest(["'\''[:space:]]|$)' roles/ requirements.yml container/ 2>/dev/null; then
+if grep -rnE 'state:[[:space:]]*latest|version:[[:space:]]*["'\'']?latest|:latest(["'\''[:space:]]|$)' roles/ requirements.yml requirements.txt requirements-lint.txt ../container/ 2>/dev/null; then
     fail "a 'latest' version, state or tag is present; pin it"
 fi
 # shellcheck disable=SC2016 # literal Vault header, not an expansion

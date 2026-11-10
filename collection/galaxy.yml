@@ -24,9 +24,9 @@ dependencies:
   community.general: ">=14.0.0,<15.0.0"
   ansible.posix: ">=2.2.2,<3.0.0"
   amazon.aws: ">=12.1.0,<13.0.0"
-repository: https://github.com/ainova-systems/infra-ansible
-documentation: https://github.com/ainova-systems/infra-ansible#readme
-issues: https://github.com/ainova-systems/infra-ansible/issues
+repository: https://github.com/ainova-systems/infra
+documentation: https://github.com/ainova-systems/infra/tree/main/collection
+issues: https://github.com/ainova-systems/infra/issues
 build_ignore:
   - .tmp
   - .ansible
@@ -35,6 +35,7 @@ build_ignore:
   - .github
   - .gitignore
   - .dockerignore
-  - container
+  - requirements.txt
+  - requirements-lint.txt
   - scripts
   - "*.tar.gz"

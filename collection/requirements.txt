@@ -1,0 +1,5 @@
+# Python toolchain a run needs, one pin per line. The infra CLI builds its virtualenv from this file at the
+# locked version, and container/Dockerfile installs the same file.
+ansible-core==2.21.6
+boto3==1.43.125
+botocore==1.43.125
