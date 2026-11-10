@@ -1,2 +1,2 @@
-# Lint toolchain on top of requirements.txt: scripts/validate.sh, the control container and `infra validate --ansible`.
+# Lint toolchain on top of requirements.txt: scripts/validate.sh and the control container.
 ansible-lint==26.11.0

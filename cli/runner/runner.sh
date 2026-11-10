@@ -84,21 +84,13 @@ collection=$source_dir/collection
 # Pinned Python toolchain, one virtualenv per requirements content.
 requirements=$collection/requirements.txt
 [ -f "$requirements" ] || die "the source has no collection/requirements.txt"
-venv_key=$(cat "$requirements" | sha256sum | cut -c1-12)
-lint=false
-if [ "$mode" = syntax ] && [ -f "$collection/requirements-lint.txt" ]; then
-  lint=true
-  venv_key=$(cat "$requirements" "$collection/requirements-lint.txt" | sha256sum | cut -c1-12)
-fi
-venv=$cache/venv-$venv_key
+venv=$cache/venv-$(hash12 "$requirements")
 if [ ! -f "$venv/.complete" ]; then
   command -v python3 >/dev/null 2>&1 || die 'python3 is required for the Ansible toolchain'
   rm -rf "$venv"
   python3 -m venv "$venv" 2>/dev/null || die 'python3 cannot create a virtualenv; install the python3-venv package'
   note "installing the pinned toolchain into $venv"
-  pip_args=(-r "$requirements")
-  $lint && pip_args+=(-r "$collection/requirements-lint.txt")
-  "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "${pip_args[@]}"
+  "$venv/bin/python" -m pip install --quiet --disable-pip-version-check -r "$requirements"
   touch "$venv/.complete"
 fi
 
