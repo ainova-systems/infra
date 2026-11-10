@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Release: a version already on npm is detected through the public registry, and any answer but found or not found
+  stops the job; `npm view` failed on the empty token in CI and the job tried to publish over `0.5.1`.
+
 ## [0.5.1] - 2026-11-10
 
 ### Added

@@ -90,8 +90,12 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          if npm view "@ainova-systems/infra@$VERSION" version >/dev/null 2>&1; then
-            echo "@ainova-systems/infra@$VERSION is already on npm; nothing to publish"
-            exit 0
-          fi
+          # Asked of the public registry directly: npm view fails on the empty token setup-node configures, and a
+          # failure to answer must stop the job, never read as "not published".
+          status=$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/@ainova-systems%2finfra/$VERSION")
+          case $status in
+            200) echo "@ainova-systems/infra@$VERSION is already on npm; nothing to publish"; exit 0 ;;
+            404) ;;
+            *) echo "the registry answered $status for @ainova-systems/infra@$VERSION; not publishing" >&2; exit 1 ;;
+          esac
           npm publish --provenance --access public --tag "${{ steps.ver.outputs.channel }}"
