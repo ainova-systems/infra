@@ -32,7 +32,7 @@ Project
 
 Hosts (one host per run)
   infra check <host> [--role <r>]...  read-only check: host health and every role's check
-  infra plan <host> [--role <r>]...   the apply as a dry run with diffs
+  infra plan <host> [--role <r>]... [--first-apply]   the apply as a dry run with diffs; writes nothing
   infra apply <host> [--role <r>]... [--yes] [--first-apply]
   infra run <playbook> <host>         one of the project's own playbooks
   infra trust <host> SHA256:<fingerprint>   record a host key confirmed out of band
@@ -141,8 +141,31 @@ async function confirm(question: string): Promise<boolean> {
   }
 }
 
+/** The runner the host runs start; tests replace it to see a run without starting Ansible. */
+export const runs = { runner: runRunner };
+
+/** ansible-playbook options after which an apply did not change the whole host: a dry run, a listing or a subset. */
+const NOT_A_FULL_APPLY = new Set(['--check', '--diff-only', '--syntax-check', '--list-hosts', '--list-tasks', '--list-tags', '--tags', '--skip-tags', '--start-at-task', '--step']);
+/** Short options that take a value: the rest of a cluster after one of them is that value. */
+const SHORT_WITH_VALUE = new Set(['e', 'i', 'l', 'u', 'f', 'M', 'c', 'T']);
+
+/** Whether the arguments for ansible-playbook leave the apply a full, real run of every role. */
+export function fullApply(passthrough: string[]): boolean {
+  for (const arg of passthrough) {
+    if (arg.startsWith('--')) {
+      if (NOT_A_FULL_APPLY.has(arg.split('=')[0]!)) return false;
+    } else if (/^-[A-Za-z]/.test(arg)) {
+      for (const option of arg.slice(1)) {
+        if (option === 'C' || option === 't') return false;
+        if (SHORT_WITH_VALUE.has(option)) break;
+      }
+    }
+  }
+  return true;
+}
+
 async function playbookRun(kind: 'check' | 'plan' | 'apply', parsed: Parsed): Promise<number> {
-  only(parsed, kind === 'apply' ? ['role', 'yes', 'first-apply'] : ['role']);
+  only(parsed, { check: ['role'], plan: ['role', 'first-apply'], apply: ['role', 'yes', 'first-apply'] }[kind]);
   const [hostId] = positionals(parsed, 1, 1, `infra ${kind} <host>`);
   refusePassthrough(parsed.passthrough);
   const project = loadProject();
@@ -184,7 +207,7 @@ async function playbookRun(kind: 'check' | 'plan' | 'apply', parsed: Parsed): Pr
   }
 
   extra.set('run-vars.yml', stringify(runVars));
-  const result = await runRunner({
+  const result = await runs.runner({
     mode: 'playbook',
     ...(lock ? { lock } : {}),
     bundle: bundle(project, env, generateOptions(project), [host], extra),
@@ -194,7 +217,11 @@ async function playbookRun(kind: 'check' | 'plan' | 'apply', parsed: Parsed): Pr
     args: [...args, ...parsed.passthrough],
     env: secrets,
   });
-  if (kind === 'apply' && runVars.infra_first_apply && result.code === 0 && roles.length === 0) activateHost(project, host.id);
+  // A planned host becomes active only after a real apply of every role; a plan, a dry run or a subset writes nothing.
+  if (kind === 'apply' && runVars.infra_first_apply && result.code === 0) {
+    if (roles.length === 0 && fullApply(parsed.passthrough)) activateHost(project, host.id);
+    else note(`${host.id} stays planned: only a full apply without --check changes its status`);
+  }
   return result.code;
 }
 

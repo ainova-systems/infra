@@ -102,7 +102,7 @@ export function sitePlaybook(project: Project, host: Host): string {
               "ansible_host | default('') | length > 0",
             ],
             fail_msg:
-              "{{ inventory_hostname }} is {{ host_status }}: a planned host needs 'infra apply --first-apply', and every host an address in the operator env file",
+              "{{ inventory_hostname }} is {{ host_status }}: a planned host needs --first-apply (infra plan or infra apply), and every host an address in the operator env file",
             quiet: true,
           },
         },

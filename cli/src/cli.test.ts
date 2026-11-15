@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
-import { main, parseArgs } from './cli.ts';
+import { fullApply, main, parseArgs, runs } from './cli.ts';
 import { readRegistry } from './registry.ts';
-import { fixtureProject } from './test-support.ts';
+import type { RunRequest } from './runner.ts';
+import { fixtureProject, MANIFEST_TEXT } from './test-support.ts';
 
 async function inProject<T>(root: string, run: () => Promise<T>): Promise<T> {
   const previous = process.cwd();
@@ -125,6 +126,106 @@ test('runs refuse what the CLI owns, unknown roles, and a host without an addres
     await assert.rejects(inProject(fixture.root, () => main(['plan', 'demo-dev-01', '--role', 'swarm_node'])), /has no role 'swarm_node'/);
     await assert.rejects(inProject(fixture.root, () => main(['apply', 'demo-staging-01', '--yes'])), /has no address/);
     await assert.rejects(inProject(fixture.root, () => main(['apply', 'demo-dev-01', '--first-apply', '--yes'])), /--first-apply is for a planned host/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+/** Runs one CLI command against a planned, addressed demo-staging-01 with a recording runner in place of Ansible. */
+async function firstRun(argv: string[], code = 0): Promise<{ before: string; after: string; requests: RunRequest[]; err: string }> {
+  const fixture = fixtureProject({ '.env': 'INFRA_DEMO_DEV_01_ADDRESS=10.0.0.5\nINFRA_DEMO_STAGING_01_ADDRESS=10.0.0.6\nINFRA_BACKUP_ENDPOINT=https://s3.example.invalid\n' });
+  const requests: RunRequest[] = [];
+  const original = runs.runner;
+  runs.runner = async (request) => (requests.push(request), { code, stdout: '' });
+  process.env.DEMO_TOKEN = 'not-a-secret';
+  try {
+    const before = readFileSync(join(fixture.root, 'infra.yaml'), 'utf8');
+    const result = await inProject(fixture.root, () => capture(() => main(argv)));
+    return { before, after: readFileSync(join(fixture.root, 'infra.yaml'), 'utf8'), requests, err: result.err };
+  } finally {
+    runs.runner = original;
+    delete process.env.DEMO_TOKEN;
+    fixture.cleanup();
+  }
+}
+
+/** The lines that differ between two texts of the same length, as [before, after] pairs. */
+function changedLines(before: string, after: string): string[][] {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  assert.equal(a.length, b.length);
+  return a.flatMap((line, index) => (line === b[index] ? [] : [[line, b[index]!]]));
+}
+
+test('plan --first-apply is the dry run of a planned host and writes nothing', async () => {
+  const run = await firstRun(['plan', 'demo-staging-01', '--first-apply']);
+  assert.equal(run.after, run.before);
+  assert.equal(run.requests.length, 1);
+  assert.deepEqual(run.requests[0]!.args!.slice(-2), ['--check', '--diff']);
+  assert.equal(parse(run.requests[0]!.bundle!.files.get('run-vars.yml')!).infra_first_apply, true);
+  const active = await firstRun(['plan', 'demo-dev-01', '--first-apply']).catch((error: Error) => error);
+  assert.match(String(active), /--first-apply is for a planned host/);
+});
+
+test('apply --first-apply in check mode, diff-only or on a subset leaves the host planned', async () => {
+  for (const extra of [['--', '--check'], ['--', '-C'], ['--', '-vC'], ['--', '--diff-only'], ['--', '--tags', 'host_base'], ['--role', 'host_base']]) {
+    const run = await firstRun(['apply', 'demo-staging-01', '--first-apply', '--yes', ...extra]);
+    assert.equal(run.requests.length, 1, extra.join(' '));
+    assert.equal(run.after, run.before, extra.join(' '));
+    assert.match(run.err, /stays planned/);
+  }
+  const failed = await firstRun(['apply', 'demo-staging-01', '--first-apply', '--yes'], 2);
+  assert.equal(failed.after, failed.before);
+});
+
+test('a full first apply sets the host active by changing its status line only', async () => {
+  const run = await firstRun(['apply', 'demo-staging-01', '--first-apply', '--yes', '--', '-v', '--diff', '-e', 'x=-C']);
+  assert.deepEqual(changedLines(run.before, run.after), [['    status: planned', '    status: active']]);
+});
+
+test('fullApply reads check mode, listings and subsets in the arguments for ansible-playbook', () => {
+  for (const args of [[], ['-v'], ['--diff'], ['-D'], ['-e', 'a=b'], ['-eC=1'], ['--extra-vars=--check']]) assert.equal(fullApply(args), true, args.join(' '));
+  for (const args of [['--check'], ['-C'], ['-DC'], ['--diff-only'], ['--syntax-check'], ['--list-tasks'], ['-t', 'x'], ['--tags=x'], ['--skip-tags', 'x'], ['--start-at-task', 'x']]) {
+    assert.equal(fullApply(args), false, args.join(' '));
+  }
+});
+
+test('manifest edits keep every other line byte for byte', async () => {
+  const fixture = fixtureProject();
+  const path = join(fixture.root, 'infra.yaml');
+  const block = '  demo-cicd-01:\n    class: cicd\n    status: planned\n    roles: [host_base, container_engine]\n';
+  try {
+    const before = readFileSync(path, 'utf8');
+    await inProject(fixture.root, () => capture(() => main(['host', 'retire', 'demo-staging-01'])));
+    const retired = readFileSync(path, 'utf8');
+    assert.deepEqual(changedLines(before, retired), [['    status: planned', '    status: retired']]);
+
+    await inProject(fixture.root, () => capture(() => main(['host', 'add', 'demo-cicd-01', '--class', 'cicd', '--role', 'host_base', '--role', 'container_engine'])));
+    const added = readFileSync(path, 'utf8');
+    assert.ok(added.includes(`${block}connect:\n`), added);
+    assert.equal(added.replace(block, ''), retired);
+
+    await inProject(fixture.root, () => capture(() => main(['host', 'remove', 'demo-cicd-01'])));
+    assert.equal(readFileSync(path, 'utf8'), retired);
+    await inProject(fixture.root, () => capture(() => main(['host', 'remove', 'demo-staging-01'])));
+    const removed = readFileSync(path, 'utf8');
+    assert.equal(parse(removed).hosts['demo-staging-01'], undefined);
+    assert.ok(removed.includes('    roles: [host_base, dev_workstation, container_engine, local_gateway]\n'));
+    assert.ok(removed.includes('      - { role: local_gateway, tasks_from: postflight }\nconnect:\n'));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('host add fills an empty hosts: {} and keeps CRLF line ends', async () => {
+  const manifest = MANIFEST_TEXT.replace(/hosts:[\s\S]*$/, 'hosts: {}\n').replace(/\n/g, '\r\n');
+  const fixture = fixtureProject({ 'infra.yaml': manifest });
+  const path = join(fixture.root, 'infra.yaml');
+  try {
+    await inProject(fixture.root, () => capture(() => main(['host', 'add', 'demo-dev-02', '--class', 'dev'])));
+    const text = readFileSync(path, 'utf8');
+    assert.ok(text.endsWith('hosts:\r\n  demo-dev-02:\r\n    class: dev\r\n    status: planned\r\n'), JSON.stringify(text));
+    assert.ok(text.includes('  values: [BACKUP_ENDPOINT]\r\n'));
   } finally {
     fixture.cleanup();
   }
