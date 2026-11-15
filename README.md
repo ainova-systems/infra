@@ -29,8 +29,8 @@ infra init && infra update                       # a new project: manifest, Ansi
 infra host add web-01 --class staging --provider hetzner --role host_base --role container_engine
 infra trust web-01 SHA256:<fingerprint read on the host console>
 infra check web-01                               # read-only: host health and every role's check
-infra plan web-01                                # the apply as a dry run with diffs
-infra apply web-01 --first-apply                 # a planned host's first apply, then plain apply
+infra plan web-01 --first-apply                  # the first apply as a dry run with diffs; writes nothing
+infra apply web-01 --first-apply                 # a planned host's first apply, then plain plan and apply
 infra validate                                   # conformance of the project, the same command in CI
 infra connect <target> [shell|files|git|web <port>|code]
 ```

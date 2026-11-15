@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `infra plan <host> --first-apply`: the dry run of a planned host's first apply; a plan never writes `infra.yaml`.
+
 ### Fixed
+
+- `infra apply --first-apply` sets a host active only after a successful real apply of every role; with `--check`,
+  `--diff-only`, a listing or a subset after `--` the host stays planned.
+- Edits of `infra.yaml` (status, `host add`, `host remove`) change only their own lines; flow lists such as `[a, b]`
+  are no longer restyled to `[ a, b ]` across the whole file.
 
 - Release: a version already on npm is detected through the public registry, and any answer but found or not found
   stops the job; `npm view` failed on the empty token in CI and the job tried to publish over `0.5.1`.

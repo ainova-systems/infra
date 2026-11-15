@@ -78,7 +78,7 @@ the variables, never per operator.
 | `infra validate [--ansible]` | conformance (below); `--ansible` adds `ansible-playbook --syntax-check` of every generated and project playbook |
 | `infra status` | project, locked source, hosts and targets (never an address) |
 | `infra check <host> [--role <r>]...` | read-only: `host_health` and every role's check through `role_checks`, all failures in one report |
-| `infra plan <host> [--role <r>]...` | the apply as `--check --diff` |
+| `infra plan <host> [--role <r>]... [--first-apply]` | the apply as `--check --diff`; writes nothing, so `--first-apply` is the dry run of a planned host |
 | `infra apply <host> [--role <r>]... [--yes] [--first-apply]` | the apply; asks first unless `--yes`, refuses without a terminal and without `--yes` |
 | `infra run <playbook> <host>` | one of the project's own playbooks, top level of its Ansible directory |
 | `infra trust <host> SHA256:<fp>` | records the host key only when it matches a fingerprint read out of band, for Ansible and the operator's ssh |
@@ -96,7 +96,13 @@ Arguments after `--` go to `ansible-playbook`, except `--limit` and `--inventory
 ## Run guards
 
 - One host per run, always with `--limit`; a retired host is refused.
-- A planned host is applied only with `--first-apply`; the host then becomes `status: active` in the manifest.
+- A planned host is planned and applied only with `--first-apply`. It becomes `status: active` only after a successful
+  apply of every role that was a real run: no `--role`, and nothing after `--` that makes it a dry run, a listing or a
+  subset (`--check`/`-C`, `--diff-only`, `--syntax-check`, `--list-*`, `--tags`/`-t`, `--skip-tags`, `--start-at-task`,
+  `--step`). Otherwise it stays planned.
+- The CLI edits `infra.yaml` as text: a status change rewrites that one value, `host add` and `host remove` insert or
+  drop the host's own lines, and every other line stays byte for byte. An edit that would not parse to exactly the
+  intended manifest is refused and writes nothing.
 - `host_base` is never applied to the machine running Ansible (machine-id comparison, tagged `host_base`).
 - Host keys are strict: a host never reached is recorded with `infra trust` and a fingerprint confirmed out of band.
 - A host with `github_actions_runner` gets short-lived registration and removal tokens from the operator's `gh` for

@@ -11,9 +11,9 @@ The CLI fixes every command, so the profile names none of them:
 | Skill need | Command |
 |---|---|
 | Read-only check (`infra-host-check`) | `infra check <id>`; a subset with `--role <role>` |
-| Preview (`infra-host-install`) | `infra plan <id>`: the apply as `--check --diff` |
+| Preview (`infra-host-install`) | `infra plan <id>`: the apply as `--check --diff`, writing nothing; `--first-apply` for a planned host |
 | Apply | `infra apply <id> --yes` after the owner approved the plan; `--role <role>` for a partial run |
-| First apply of a planned host | `infra apply <id> --first-apply --yes`; the CLI sets the host active in `infra.yaml` |
+| First apply of a planned host | `infra plan <id> --first-apply`, then `infra apply <id> --first-apply --yes`; only a full real apply sets the host active in `infra.yaml`, never one with `--check` or `--role` |
 | New host key | `infra trust <id> SHA256:<fingerprint>` with a fingerprint read out of band |
 | New host | `infra host add <id> --class <class> --provider <provider> --role <role>...` |
 | Pin move | `infra update` (the source tag in `infra.lock`); role pins are host variables |
