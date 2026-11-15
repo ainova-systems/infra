@@ -43,7 +43,8 @@ running Ansible, strict host keys). The project owns its values, reviewed in its
 
 One tag `vX.Y.Z` releases all of it: the CLI on npm, the collection and the packs at the same commit. A project locks
 the tag in `infra.lock` (`infra update`) and the packs in `intelligence.lock`; `infra validate` reports a lock outside
-the manifest's range. History: [CHANGELOG.md](CHANGELOG.md). Decisions: [decisions/](decisions/README.md).
+the manifest's range. The CLI itself moves with `infra upgrade` (`npm install -g @ainova-systems/infra@latest`), and
+the code of `plan`, `apply` and manifest edits is the installed CLI's, so a fix there needs both. History: [CHANGELOG.md](CHANGELOG.md). Decisions: [decisions/](decisions/README.md).
 
 ## Develop
 

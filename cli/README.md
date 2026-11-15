@@ -8,6 +8,7 @@ dev host, and edits the manifest when hosts come and go.
 ```bash
 npm install -g @ainova-systems/infra
 infra help
+infra upgrade        # later: the latest CLI, the same as npm install -g @ainova-systems/infra@latest
 ```
 
 Node.js 24 or later. Ansible runs on Linux: on Linux the CLI starts its runner directly, on Windows inside WSL
@@ -75,6 +76,7 @@ the variables, never per operator.
 |---|---|
 | `infra init [--project <name>] [--ansible <dir>]` | creates `infra.yaml`, the Ansible directory and `.env.example` |
 | `infra update [--ref <tag\|branch\|commit>]` | locks the newest release tag the range accepts, or one ref (testing) |
+| `infra upgrade` | installs the latest CLI: `npm install -g @ainova-systems/infra@latest`, from any directory; a project's lock still moves only with `infra update` |
 | `infra validate [--ansible]` | conformance (below); `--ansible` adds `ansible-playbook --syntax-check` of every generated and project playbook |
 | `infra status` | project, locked source, hosts and targets (never an address) |
 | `infra check <host> [--role <r>]...` | read-only: `host_health` and every role's check through `role_checks`, all failures in one report |

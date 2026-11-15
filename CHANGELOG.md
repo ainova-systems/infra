@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `infra upgrade`: installs the latest CLI, the same as `npm install -g @ainova-systems/infra@latest`.
+
 ## [0.5.2] - 2026-11-15
 
 ### Added

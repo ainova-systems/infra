@@ -17,6 +17,7 @@ The CLI fixes every command, so the profile names none of them:
 | New host key | `infra trust <id> SHA256:<fingerprint>` with a fingerprint read out of band |
 | New host | `infra host add <id> --class <class> --provider <provider> --role <role>...` |
 | Pin move | `infra update` (the source tag in `infra.lock`); role pins are host variables |
+| CLI upgrade | `infra upgrade` (`npm install -g @ainova-systems/infra@latest`) on the operator workstation; the lock does not move with it |
 | Conformance | `infra validate`, and `infra validate --ansible` for a syntax check of every playbook |
 | Hosts and lock | `infra status` |
 
