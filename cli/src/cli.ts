@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -27,6 +28,7 @@ Project
   infra validate [--ansible]          conformance of the project; --ansible adds a syntax check of every playbook
   infra status                        project, locked source and hosts
   infra update [--ref <tag|branch|commit>]   lock the newest source the range accepts, or one ref
+  infra upgrade                       install the latest CLI (npm install -g @ainova-systems/infra@latest)
   infra host add <id> --class <class> [--provider <p>] [--role <r>]...
   infra host retire <id> | infra host remove <id>
 
@@ -113,7 +115,7 @@ function runnableLock(project: Project): Lock | undefined {
   const locked = parseVersion(lock!.version);
   const own = parseVersion(VERSION);
   if (locked && own && (locked[0] > own[0] || (locked[0] === own[0] && locked[1] > own[1]))) {
-    warn(`the project locks ${lock!.version}, newer than this CLI ${VERSION}; upgrade the CLI (npm install -g @ainova-systems/infra)`);
+    warn(`the project locks ${lock!.version}, newer than this CLI ${VERSION}; run 'infra upgrade'`);
   }
   return lock;
 }
@@ -141,8 +143,29 @@ async function confirm(question: string): Promise<boolean> {
   }
 }
 
-/** The runner the host runs start; tests replace it to see a run without starting Ansible. */
-export const runs = { runner: runRunner };
+/** The arguments infra upgrade gives npm: fixed words, so the Windows shell npm needs never sees a value. */
+export const UPGRADE_ARGS = ['install', '-g', '@ainova-systems/infra@latest'];
+
+/** npm is a .cmd on Windows, which Node starts only through a shell; elsewhere it starts directly. */
+function npm(args: string[]): number {
+  const result = isWindows ? spawnSync(['npm', ...args].join(' '), { stdio: 'inherit', shell: true }) : spawnSync('npm', args, { stdio: 'inherit' });
+  if (result.error) throw new InfraError(`cannot start npm: ${result.error.message}`);
+  return result.status ?? 1;
+}
+
+/** The processes the CLI starts; tests replace them to see a run without starting Ansible or npm. */
+export const runs = { runner: runRunner, npm };
+
+/** Alias of npm install -g @ainova-systems/infra@latest; a project's lock still moves only with infra update. */
+function upgrade(parsed: Parsed): number {
+  only(parsed, []);
+  positionals(parsed, 0, 0, 'infra upgrade');
+  if (parsed.passthrough.length > 0) throw new InfraError('usage: infra upgrade');
+  note(`upgrading the CLI from ${VERSION}: npm ${UPGRADE_ARGS.join(' ')}`);
+  const code = runs.npm(UPGRADE_ARGS);
+  if (code === 0) note("upgraded; 'infra version' shows it, and 'infra update' moves a project's lock");
+  return code;
+}
 
 /** ansible-playbook options after which an apply did not change the whole host: a dry run, a listing or a subset. */
 const NOT_A_FULL_APPLY = new Set(['--check', '--diff-only', '--syntax-check', '--list-hosts', '--list-tasks', '--list-tags', '--tags', '--skip-tags', '--start-at-task', '--step']);
@@ -446,6 +469,8 @@ async function main(argv: string[]): Promise<number> {
       return status(parsed);
     case 'update':
       return update(parsed);
+    case 'upgrade':
+      return upgrade(parsed);
     case 'check':
     case 'plan':
     case 'apply':

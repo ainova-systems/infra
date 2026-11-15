@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
-import { fullApply, main, parseArgs, runs } from './cli.ts';
+import { fullApply, main, parseArgs, runs, UPGRADE_ARGS } from './cli.ts';
 import { readRegistry } from './registry.ts';
 import type { RunRequest } from './runner.ts';
 import { fixtureProject, MANIFEST_TEXT } from './test-support.ts';
@@ -228,6 +228,28 @@ test('host add fills an empty hosts: {} and keeps CRLF line ends', async () => {
     assert.ok(text.includes('  values: [BACKUP_ENDPOINT]\r\n'));
   } finally {
     fixture.cleanup();
+  }
+});
+
+test('upgrade installs the latest CLI through npm, outside any project, and passes its exit code', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'infra-upgrade-'));
+  const calls: string[][] = [];
+  const original = runs.npm;
+  try {
+    for (const code of [0, 3]) {
+      runs.npm = (args) => (calls.push(args), code);
+      const result = await inProject(root, () => capture(() => main(['upgrade'])));
+      assert.equal(result.code, code);
+    }
+    assert.deepEqual(calls, [UPGRADE_ARGS, UPGRADE_ARGS]);
+    assert.deepEqual(UPGRADE_ARGS, ['install', '-g', '@ainova-systems/infra@latest']);
+    await assert.rejects(main(['upgrade', 'next']), /usage: infra upgrade/);
+    await assert.rejects(main(['upgrade', '--', '--force']), /usage: infra upgrade/);
+    await assert.rejects(main(['upgrade', '--yes']), /unknown option --yes/);
+    assert.equal(calls.length, 2);
+  } finally {
+    runs.npm = original;
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
